@@ -2,9 +2,13 @@
 配置模块 - GitHub Topics Trending 配置管理
 """
 import os
+from dotenv import load_dotenv
+
+# 加载 .env 文件
+load_dotenv()
 
 # ============================================================================
-# Claude API 配置
+# OpenAI API 配置 (兼容 Kimi/New API)
 # ============================================================================
 ANTHROPIC_BASE_URL = os.getenv(
     "ANTHROPIC_BASE_URL",
