@@ -8,15 +8,16 @@ from src.pipeline.contracts import RepoData, RepoSelectionResult
 
 def build_repository_search_text(repo: RepoData) -> str:
     """构建仓库检索文本。"""
+    topics = [str(topic) for topic in (repo.get("topics") or []) if topic]
     parts = [
-        repo.get("repo_name", ""),
-        repo.get("name", ""),
-        repo.get("owner", ""),
-        repo.get("description", ""),
-        repo.get("language", ""),
-        " ".join(repo.get("topics", []) or []),
+        str(repo.get("repo_name") or ""),
+        str(repo.get("name") or ""),
+        str(repo.get("owner") or ""),
+        str(repo.get("description") or ""),
+        str(repo.get("language") or ""),
+        " ".join(topics),
     ]
-    return " ".join(parts).lower()
+    return " ".join(part for part in parts if part).lower()
 
 
 def collect_keyword_matches(repo: RepoData, keywords: List[str]) -> List[str]:

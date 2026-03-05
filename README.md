@@ -102,6 +102,14 @@ cp .env.example .env
 # 完整流程：抓取 + 分析 + 邮件 + 网页
 uv run main.py
 
+# Debug：临时仅分析 2 个项目，降低调试开销
+TOP_N_DETAILS=2 uv run main.py --fetch-only
+
+# 单仓库模式：仅针对指定仓库执行分析 + 邮件
+uv run main.py --repo CherryHQ/cherry-studio
+# 或使用 GitHub URL
+uv run main.py --repo https://github.com/CherryHQ/cherry-studio
+
 # 仅抓取与分析
 uv run main.py --fetch-only
 
@@ -113,18 +121,26 @@ uv run main.py --opportunity-report
 
 ## 关键配置
 
-| 变量                          | 必需 | 说明                           |
-| ----------------------------- | ---- | ------------------------------ |
-| `GH_TOKEN`                    | 是   | GitHub Token                   |
-| `TOPIC`                       | 否   | 追踪话题（默认 `claude-code`） |
-| `ZHIPU_API_KEY`               | 是   | 模型 API Key                   |
-| `RESEND_API_KEY`              | 是   | Resend API Key                 |
-| `EMAIL_TO`                    | 是   | 收件人邮箱                     |
-| `ANALYSIS_KEYWORDS`           | 否   | 关键词筛选（逗号分隔）         |
-| `ANALYSIS_KEYWORD_MATCH_MODE` | 否   | `any` / `all`                  |
-| `ANALYSIS_CUSTOM_PROMPT`      | 否   | 自定义分析提示词               |
-| `PUSH_MIN_COMMERCIAL_LEVEL`   | 否   | `strong` / `weak`              |
-| `GITHUB_CACHE_MINUTES`        | 否   | 抓取缓存分钟数                 |
+| 变量                                   | 必需 | 说明                            |
+| -------------------------------------- | ---- | ------------------------------- |
+| `GH_TOKEN`                             | 是   | GitHub Token                    |
+| `TOPIC`                                | 否   | 追踪话题（默认 `claude-code`）  |
+| `ZHIPU_API_KEY`                        | 是   | 模型 API Key                    |
+| `RESEND_API_KEY`                       | 是   | Resend API Key                  |
+| `EMAIL_TO`                             | 是   | 收件人邮箱                      |
+| `TOP_N_DETAILS`                        | 否   | AI 分析项目上限（debug 可设 2） |
+| `LLM_JSON_REPAIR_RETRIES`              | 否   | JSON 解析失败后修复重试次数     |
+| `ANALYSIS_KEYWORDS`                    | 否   | 关键词筛选（逗号分隔）          |
+| `ANALYSIS_KEYWORD_MATCH_MODE`          | 否   | `any` / `all`                   |
+| `ANALYSIS_CUSTOM_PROMPT`               | 否   | 自定义分析提示词                |
+| `GITHUB_ACTIVITY_WINDOW_DAYS`          | 否   | 分析时纳入的 Issue/PR 窗口天数  |
+| `GITHUB_ACTIVITY_ISSUES_LIMIT`         | 否   | 每仓库纳入 Prompt 的 Issue 条数 |
+| `GITHUB_ACTIVITY_PRS_LIMIT`            | 否   | 每仓库纳入 Prompt 的 PR 条数    |
+| `GITHUB_ACTIVITY_DETAIL_ISSUES_LIMIT`  | 否   | 二阶段深挖的 Issue 条数         |
+| `GITHUB_ACTIVITY_DETAIL_PRS_LIMIT`     | 否   | 二阶段深挖的 PR 条数            |
+| `GITHUB_ACTIVITY_DETAIL_LAST_COMMENTS` | 否   | 二阶段每条保留的最后对话条数    |
+| `PUSH_MIN_COMMERCIAL_LEVEL`            | 否   | `strong` / `weak`               |
+| `GITHUB_CACHE_MINUTES`                 | 否   | 抓取缓存分钟数                  |
 
 ---
 

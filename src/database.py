@@ -678,7 +678,7 @@ class Database:
         cursor.execute(
             """
             SELECT r.rank, r.repo_name, r.owner, r.stars, r.stars_delta, r.language, r.url,
-                   d.summary, d.tags, d.purpose_assessment
+                 d.summary, d.description, d.use_case, d.tags, d.purpose_assessment
             FROM repos_daily r
             LEFT JOIN repos_details d ON r.repo_name = d.repo_name
             WHERE r.date = ?
@@ -722,12 +722,18 @@ class Database:
                     "language": row.get("language", ""),
                     "url": row.get("url", ""),
                     "summary": row.get("summary", ""),
+                    "description": row.get("description", ""),
+                    "use_case": row.get("use_case", ""),
                     "tags": tags,
                     "domain": purpose.get("domain", ""),
                     "domain_barrier_level": purpose.get("domain_barrier_level", ""),
+                    "domain_barrier_reason": purpose.get("domain_barrier_reason", ""),
                     "maturity_level": purpose.get("maturity_level", ""),
+                    "is_model_service_project": bool(purpose.get("is_model_service_project", False)),
+                    "model_service_focus": purpose.get("model_service_focus", ""),
                     "commercial_value_level": commercial_level,
                     "commercial_value_reason": purpose.get("commercial_value_reason", ""),
+                    "recommended_for_push": recommended,
                     "private_deploy_fit": purpose.get("private_deploy_fit", ""),
                     "implemented_features": purpose.get("implemented_features", []) or [],
                     "current_issues": purpose.get("current_issues", []) or [],

@@ -1,313 +1,65 @@
 """
 Email Reporter - 生成 HTML 邮件报告
-GitHub Topics Trending 专业邮件排版
+聚焦可读性：浅色背景、宽版布局、摘要表 + 详细展开
 """
-from typing import Dict, List
-from src.config import TOPIC, PUSH_MIN_COMMERCIAL_LEVEL, get_theme, format_number
+
+from html import escape
+from typing import Dict, List, Optional
+
+from src.config import PUSH_MIN_COMMERCIAL_LEVEL, TOPIC, format_number, get_theme
 
 
 class EmailReporter:
     """生成 HTML 邮件报告"""
 
     def __init__(self, theme: str = "blue"):
-        """
-        初始化
-
-        Args:
-            theme: 主题名称
-        """
         self.theme = get_theme(theme)
         self.topic = TOPIC
 
-    def generate_email_html(self, trends: Dict, date: str) -> str:
-        """
-        生成完整的 HTML 邮件
+    def generate_email_html(
+        self,
+        trends: Dict,
+        date: str,
+        report: Optional[Dict] = None,
+        single_repo_mode: bool = False,
+    ) -> str:
+        """生成完整 HTML 邮件。"""
+        projects = self._resolve_projects(trends=trends, report=report)
 
-        Args:
-            trends: 趋势数据
-            date: 日期
-
-        Returns:
-            HTML 字符串
-        """
-        html_parts = []
-
-        # HTML 头部
-        html_parts.append(self._get_header(date))
-
-        # 高潜商业价值项目（仅推送目标项目）
-        opportunities = self._filter_push_candidates(trends.get("top_20", []))
-        html_parts.append(self._render_target_opportunities(opportunities))
-
-        # 星标增长 Top 5
-        rising = trends.get("rising_top5", [])
-        if rising:
-            html_parts.append(self._render_rising_top5(rising))
-
-        # 新晋项目
-        new_entries = trends.get("new_entries", [])
-        if new_entries:
-            html_parts.append(self._render_new_entries(new_entries))
-
-        # 活跃项目
-        active = trends.get("active", [])
-        if active:
-            html_parts.append(self._render_active(active))
-
-        # 统计信息
-        html_parts.append(self._render_stats(trends, opportunities))
-
-        # HTML 尾部
-        html_parts.append(self._get_footer(date))
+        html_parts = [self._get_header(date=date, single_repo_mode=single_repo_mode)]
+        html_parts.append(self._render_overview(report=report, projects=projects, single_repo_mode=single_repo_mode))
+        html_parts.append(self._render_summary_table(projects=projects))
+        html_parts.append(self._render_project_details(projects=projects))
+        html_parts.append(self._render_compact_trends(trends=trends))
+        html_parts.append(self._get_footer(date=date))
 
         return "\n".join(html_parts)
 
-    def _get_header(self, date: str) -> str:
-        """生成 HTML 头部"""
-        t = self.theme
-        return f"""<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GitHub Topics Daily - {self.topic}</title>
-    <style>
-        body {{
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            margin: 0;
-            padding: 0;
-            background-color: {t['bg']};
-            -webkit-font-smoothing: antialiased;
-        }}
-        .container {{
-            max-width: 640px;
-            margin: 0 auto;
-            background-color: {t['card']};
-        }}
-        .header {{
-            background: linear-gradient(135deg, {t['primary']} 0%, {t['secondary']} 100%);
-            color: white;
-            padding: 40px 30px;
-            text-align: center;
-        }}
-        .header h1 {{
-            margin: 0;
-            font-size: 26px;
-            font-weight: 600;
-            letter-spacing: -0.5px;
-        }}
-        .header p {{
-            margin: 8px 0 0;
-            font-size: 14px;
-            opacity: 0.8;
-            font-weight: 400;
-        }}
-        .section {{
-            padding: 28px 30px;
-            border-bottom: 1px solid {t['border']};
-        }}
-        .section:last-child {{
-            border-bottom: none;
-        }}
-        .section-title {{
-            margin: 0 0 20px;
-            font-size: 15px;
-            font-weight: 600;
-            color: {t['text']};
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            padding-bottom: 12px;
-            border-bottom: 2px solid {t['primary']};
-        }}
-        .repo-card {{
-            margin-bottom: 16px;
-            padding: 0;
-            background-color: {t['card']};
-        }}
-        .repo-card:last-child {{
-            margin-bottom: 0;
-        }}
-        .repo-main {{
-            display: flex;
-            align-items: baseline;
-            padding: 14px 16px;
-            background-color: {t['bg']};
-            border-radius: 6px;
-            border-left: 3px solid {t['primary']};
-        }}
-        .repo-rank {{
-            font-size: 14px;
-            font-weight: 700;
-            color: {t['text']};
-            min-width: 32px;
-        }}
-        .repo-name {{
-            font-size: 15px;
-            font-weight: 600;
-            color: {t['text']};
-            flex-grow: 1;
-            margin: 0 10px;
-        }}
-        .repo-name a {{
-            color: {t['text']};
-            text-decoration: none;
-        }}
-        .repo-name a:hover {{
-            text-decoration: underline;
-        }}
-        .repo-stats {{
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            font-size: 13px;
-        }}
-        .rank-change {{
-            font-weight: 600;
-            padding: 2px 6px;
-            border-radius: 3px;
-            font-size: 12px;
-        }}
-        .rank-up {{
-            color: {t['success']};
-            background-color: rgba(35, 134, 54, 0.2);
-        }}
-        .rank-down {{
-            color: {t['danger']};
-            background-color: rgba(248, 81, 73, 0.2);
-        }}
-        .rank-same {{
-            color: {t['text_secondary']};
-            background-color: {t['border']};
-        }}
-        .stars {{
-            color: {t['text_secondary']};
-            font-size: 13px;
-        }}
-        .repo-content {{
-            padding: 12px 16px 0;
-        }}
-        .repo-summary {{
-            color: {t['text_secondary']};
-            font-size: 14px;
-            line-height: 1.6;
-            margin-bottom: 8px;
-        }}
-        .repo-meta {{
-            font-size: 13px;
-            color: {t['text_secondary']};
-            margin-bottom: 10px;
-        }}
-        .badge {{
-            display: inline-block;
-            padding: 3px 8px;
-            border-radius: 4px;
-            font-size: 11px;
-            font-weight: 500;
-            margin-right: 6px;
-            margin-bottom: 4px;
-        }}
-        .badge-category {{
-            background-color: {t['primary']};
-            color: white;
-        }}
-        .badge-language {{
-            background-color: {t['border']};
-            color: {t['text']};
-        }}
-        .badge-new {{
-            background-color: {t['success']};
-            color: white;
-        }}
-        .solves-list {{
-            display: flex;
-            flex-wrap: wrap;
-            gap: 6px;
-        }}
-        .solve-tag {{
-            background-color: {t['border']};
-            color: {t['text_secondary']};
-            padding: 4px 10px;
-            border-radius: 4px;
-            font-size: 12px;
-        }}
-        .stats-grid {{
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 12px;
-        }}
-        .stat-item {{
-            text-align: center;
-            padding: 16px;
-            background-color: {t['bg']};
-            border-radius: 8px;
-        }}
-        .stat-value {{
-            font-size: 24px;
-            font-weight: 700;
-            color: {t['primary']};
-        }}
-        .stat-label {{
-            font-size: 12px;
-            color: {t['text_secondary']};
-            margin-top: 4px;
-        }}
-        .footer {{
-            text-align: center;
-            padding: 28px 20px;
-            font-size: 12px;
-            color: {t['text_secondary']};
-            background-color: {t['bg']};
-        }}
-        .footer a {{
-            color: {t['primary']};
-            text-decoration: none;
-            font-weight: 500;
-        }}
-        .footer a:hover {{
-            text-decoration: underline;
-        }}
-        .compact-card {{
-            padding: 12px 14px;
-            margin-bottom: 8px;
-            background-color: {t['bg']};
-            border-radius: 6px;
-            border-left: 3px solid {t['border']};
-        }}
-        .compact-card:last-child {{
-            margin-bottom: 0;
-        }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>GitHub Topics Daily</h1>
-            <p>#{self.topic} - {date}</p>
-        </div>"""
+    @staticmethod
+    def _as_list(value: object) -> List[str]:
+        if not isinstance(value, list):
+            return []
 
-    def _get_footer(self, date: str) -> str:
-        """生成 HTML 尾部"""
-        return f"""        <div class="footer">
-            <p>GitHub Topics Trending - #{self.topic}</p>
-            <p style="margin-top: 8px;">Data source: <a href="https://github.com/topics/{self.topic}">github.com/topics/{self.topic}</a></p>
-        </div>
-    </div>
-</body>
-</html>"""
+        normalized: List[str] = []
+        for item in value:
+            text = str(item or "").strip()
+            if not text:
+                continue
+            if text not in normalized:
+                normalized.append(text)
+        return normalized
 
-    def _render_top_20(self, repos: List[Dict]) -> str:
-        """渲染 Top 20 榜单"""
-        if not repos:
-            return self._section_html("Top 20 榜单", '<p style="text-align:center;color:#9ca3af;padding:24px;">暂无数据</p>')
+    @staticmethod
+    def _safe_text(value: object) -> str:
+        return escape(str(value or "").strip())
 
-        cards = []
-        for repo in repos[:20]:
-            cards.append(self._format_repo_card(repo, show_details=True))
-
-        return self._section_html("Top 20 经典榜单", "\n".join(cards))
+    @staticmethod
+    def _safe_multiline(value: object) -> str:
+        text = escape(str(value or "").strip())
+        return text.replace("\n", "<br>")
 
     def _filter_push_candidates(self, repos: List[Dict]) -> List[Dict]:
-        """根据商业价值等级过滤邮件候选项目"""
+        """兼容旧路径：从 trends.top_20 中筛选商业候选。"""
         if not repos:
             return []
 
@@ -315,268 +67,571 @@ class EmailReporter:
         if PUSH_MIN_COMMERCIAL_LEVEL == "weak":
             allowed_levels = {"strong", "weak"}
 
-        candidates: List[Dict] = []
+        selected: List[Dict] = []
         for repo in repos:
             assessment = repo.get("purpose_assessment", {}) or {}
             level = str(assessment.get("commercial_value_level", "none")).lower()
             recommended = bool(assessment.get("recommended_for_push", False))
             if recommended and level in allowed_levels:
-                candidates.append(repo)
+                selected.append(repo)
 
-        return candidates
+        return selected
 
-    def _render_target_opportunities(self, repos: List[Dict]) -> str:
-        """渲染目标导向机会清单"""
-        if not repos:
-            return self._section_html(
-                "目标机会项目",
-                '<p style="text-align:center;color:#9ca3af;padding:24px;">未发现满足当前商业价值阈值的项目</p>',
+    def _normalize_project(self, project: Dict) -> Dict:
+        """标准化项目结构，兼容 report 与 trends 两种来源。"""
+        raw_assessment = project.get("purpose_assessment")
+        assessment = raw_assessment if isinstance(raw_assessment, dict) else {}
+
+        commercial_value_level = str(
+            project.get("commercial_value_level")
+            or assessment.get("commercial_value_level")
+            or "none"
+        ).lower()
+
+        return {
+            "rank": project.get("rank", 0),
+            "repo_name": project.get("repo_name", ""),
+            "owner": project.get("owner", ""),
+            "url": project.get("url", ""),
+            "stars": project.get("stars", 0),
+            "stars_delta": project.get("stars_delta", 0),
+            "language": project.get("language", ""),
+            "summary": project.get("summary", "") or project.get("description", ""),
+            "description": project.get("description", ""),
+            "use_case": project.get("use_case", ""),
+            "tags": self._as_list(project.get("tags", [])),
+            "domain": project.get("domain") or assessment.get("domain", ""),
+            "domain_barrier_level": project.get("domain_barrier_level") or assessment.get("domain_barrier_level", ""),
+            "domain_barrier_reason": project.get("domain_barrier_reason") or assessment.get("domain_barrier_reason", ""),
+            "maturity_level": project.get("maturity_level") or assessment.get("maturity_level", ""),
+            "is_model_service_project": bool(
+                project.get("is_model_service_project", assessment.get("is_model_service_project", False))
+            ),
+            "model_service_focus": project.get("model_service_focus") or assessment.get("model_service_focus", ""),
+            "commercial_value_level": commercial_value_level,
+            "commercial_value_reason": project.get("commercial_value_reason") or assessment.get("commercial_value_reason", ""),
+            "recommended_for_push": bool(
+                project.get("recommended_for_push", assessment.get("recommended_for_push", False))
+            ),
+            "private_deploy_fit": project.get("private_deploy_fit") or assessment.get("private_deploy_fit", ""),
+            "implemented_features": self._as_list(
+                project.get("implemented_features", assessment.get("implemented_features", []))
+            ),
+            "current_issues": self._as_list(
+                project.get("current_issues", assessment.get("current_issues", []))
+            ),
+            "roadmap_signals": self._as_list(
+                project.get("roadmap_signals", assessment.get("roadmap_signals", []))
+            ),
+            "future_directions": self._as_list(
+                project.get("future_directions", assessment.get("future_directions", []))
+            ),
+            "infra_transformation_opportunities": self._as_list(
+                project.get(
+                    "infra_transformation_opportunities",
+                    assessment.get("infra_transformation_opportunities", []),
+                )
+            ),
+        }
+
+    def _resolve_projects(self, trends: Dict, report: Optional[Dict]) -> List[Dict]:
+        """解析邮件项目列表（优先 report.projects）。"""
+        source_projects: List[Dict]
+
+        if isinstance(report, dict):
+            report_projects = report.get("projects", [])
+            if isinstance(report_projects, list) and report_projects:
+                source_projects = report_projects
+            else:
+                source_projects = self._filter_push_candidates(trends.get("top_20", []))
+        else:
+            source_projects = self._filter_push_candidates(trends.get("top_20", []))
+
+        normalized = [self._normalize_project(project) for project in source_projects if isinstance(project, dict)]
+        return [project for project in normalized if project.get("repo_name")]
+
+    def _get_header(self, date: str, single_repo_mode: bool) -> str:
+        """生成邮件头（浅色、宽版、紧凑）。"""
+        mode_text = "单仓库定向分析" if single_repo_mode else "全量机会扫描"
+
+        return f"""<!DOCTYPE html>
+<html lang=\"zh-CN\">
+<head>
+  <meta charset=\"UTF-8\">
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">
+  <title>GitHub Topics Daily - {self._safe_text(self.topic)}</title>
+  <style>
+    body {{
+      margin: 0;
+      padding: 0;
+      background: #f3f4f6;
+      color: #0f172a;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }}
+    .container {{
+      max-width: 920px;
+      margin: 0 auto;
+      background: #ffffff;
+      border: 1px solid #e5e7eb;
+    }}
+    .header {{
+      padding: 24px 28px;
+      border-bottom: 1px solid #e5e7eb;
+      background: #ffffff;
+    }}
+    .header h1 {{
+      margin: 0;
+      font-size: 24px;
+      line-height: 1.3;
+      color: #111827;
+      font-weight: 700;
+    }}
+    .header p {{
+      margin: 8px 0 0;
+      color: #4b5563;
+      font-size: 13px;
+    }}
+    .section {{
+      padding: 20px 28px;
+      border-bottom: 1px solid #e5e7eb;
+    }}
+    .section-title {{
+      margin: 0 0 12px;
+      font-size: 16px;
+      color: #111827;
+      font-weight: 700;
+    }}
+    .muted {{
+      color: #6b7280;
+      font-size: 13px;
+    }}
+    .table {{
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+      color: #111827;
+      table-layout: fixed;
+    }}
+    .table th {{
+      text-align: left;
+      background: #f8fafc;
+      color: #374151;
+      font-weight: 600;
+      border: 1px solid #e5e7eb;
+      padding: 8px 10px;
+      vertical-align: top;
+    }}
+    .table td {{
+      border: 1px solid #e5e7eb;
+      padding: 8px 10px;
+      vertical-align: top;
+      word-wrap: break-word;
+      overflow-wrap: anywhere;
+    }}
+    .repo-link {{
+      color: #0f4c81;
+      text-decoration: none;
+      font-weight: 600;
+    }}
+    .repo-link:hover {{
+      text-decoration: underline;
+    }}
+    .kpi-grid {{
+      width: 100%;
+      border-collapse: collapse;
+    }}
+    .kpi-grid td {{
+      border: 1px solid #e5e7eb;
+      padding: 12px;
+      background: #fafafa;
+      text-align: center;
+    }}
+    .kpi-value {{
+      font-size: 20px;
+      font-weight: 700;
+      color: #111827;
+      line-height: 1.2;
+    }}
+    .kpi-label {{
+      margin-top: 4px;
+      font-size: 12px;
+      color: #6b7280;
+    }}
+    details.project {{
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      margin-bottom: 12px;
+      background: #ffffff;
+    }}
+    details.project summary {{
+      cursor: pointer;
+      list-style: none;
+      padding: 10px 12px;
+      background: #f8fafc;
+      border-bottom: 1px solid #e5e7eb;
+      color: #111827;
+      font-weight: 600;
+      font-size: 14px;
+    }}
+    details.project summary::-webkit-details-marker {{
+      display: none;
+    }}
+    details.project .detail-body {{
+      padding: 12px;
+      font-size: 13px;
+      color: #1f2937;
+      line-height: 1.6;
+    }}
+    .badge {{
+      display: inline-block;
+      margin: 0 6px 6px 0;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      border: 1px solid #d1d5db;
+      color: #374151;
+      background: #f9fafb;
+    }}
+    .block-title {{
+      margin: 10px 0 4px;
+      font-size: 12px;
+      color: #111827;
+      font-weight: 700;
+    }}
+    .list {{
+      margin: 4px 0 0;
+      padding-left: 18px;
+      color: #374151;
+    }}
+    .list li {{
+      margin-bottom: 4px;
+    }}
+    .detail-grid {{
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 8px;
+    }}
+    .detail-grid td {{
+      border: 1px solid #e5e7eb;
+      padding: 8px;
+      vertical-align: top;
+    }}
+    .detail-grid td:first-child {{
+      width: 140px;
+      background: #f9fafb;
+      color: #111827;
+      font-weight: 600;
+      font-size: 12px;
+    }}
+    .footer {{
+      padding: 18px 28px;
+      color: #6b7280;
+      font-size: 12px;
+      text-align: center;
+      background: #f9fafb;
+    }}
+    @media only screen and (max-width: 760px) {{
+      .container {{
+        max-width: 100% !important;
+        border-left: none;
+        border-right: none;
+      }}
+      .section, .header, .footer {{
+        padding: 14px !important;
+      }}
+      .table, .table thead, .table tbody, .table th, .table td, .table tr {{
+        display: block;
+      }}
+      .table thead {{
+        display: none;
+      }}
+      .table td {{
+        border-top: none;
+      }}
+    }}
+  </style>
+</head>
+<body>
+  <div class=\"container\">
+    <div class=\"header\">
+      <h1>GitHub 商业机会日报</h1>
+      <p>Topic: #{self._safe_text(self.topic)} ｜ 日期: {self._safe_text(date)} ｜ 模式: {self._safe_text(mode_text)}</p>
+    </div>"""
+
+    def _get_footer(self, date: str) -> str:
+        return f"""    <div class=\"footer\">
+      <div>GitHub Topics Trending · {self._safe_text(date)}</div>
+      <div style=\"margin-top:6px;\">Data source: <a href=\"https://github.com/topics/{self._safe_text(self.topic)}\" style=\"color:#0f4c81;text-decoration:none;\">github.com/topics/{self._safe_text(self.topic)}</a></div>
+    </div>
+  </div>
+</body>
+</html>"""
+
+    def _render_overview(self, report: Optional[Dict], projects: List[Dict], single_repo_mode: bool) -> str:
+        total_candidates = len(projects)
+        strong_count = len(
+            [project for project in projects if str(project.get("commercial_value_level", "")).lower() == "strong"]
+        )
+        weak_count = len(
+            [project for project in projects if str(project.get("commercial_value_level", "")).lower() == "weak"]
+        )
+
+        if isinstance(report, dict):
+            strong_count = int(report.get("strong_count", strong_count) or strong_count)
+            weak_count = int(report.get("weak_count", weak_count) or weak_count)
+
+        mode_desc = "仅展示指定仓库" if single_repo_mode else "按商业阈值筛选后全量展示"
+
+        return f"""    <div class=\"section\">
+      <h2 class=\"section-title\">摘要概览</h2>
+      <table class=\"kpi-grid\" role=\"presentation\">
+        <tr>
+          <td>
+            <div class=\"kpi-value\">{total_candidates}</div>
+            <div class=\"kpi-label\">候选项目</div>
+          </td>
+          <td>
+            <div class=\"kpi-value\">{strong_count}</div>
+            <div class=\"kpi-label\">Strong</div>
+          </td>
+          <td>
+            <div class=\"kpi-value\">{weak_count}</div>
+            <div class=\"kpi-label\">Weak</div>
+          </td>
+          <td>
+            <div class=\"kpi-value\">{self._safe_text(PUSH_MIN_COMMERCIAL_LEVEL)}</div>
+            <div class=\"kpi-label\">阈值</div>
+          </td>
+        </tr>
+      </table>
+      <p class=\"muted\" style=\"margin:10px 0 0;\">展示策略：{self._safe_text(mode_desc)}</p>
+    </div>"""
+
+    def _render_summary_table(self, projects: List[Dict]) -> str:
+        if not projects:
+            return """    <div class=\"section\">
+      <h2 class=\"section-title\">项目摘要表</h2>
+      <p class=\"muted\">当前阈值下暂无候选项目。</p>
+    </div>"""
+
+        rows: List[str] = []
+        for project in projects:
+            rank = project.get("rank", "-")
+            repo_name = self._safe_text(project.get("repo_name", ""))
+            summary = self._safe_text(project.get("summary", "") or project.get("description", ""))
+            url = self._safe_text(project.get("url", ""))
+            commercial = self._safe_text(project.get("commercial_value_level", "none"))
+            stars = format_number(int(project.get("stars", 0) or 0))
+
+            rows.append(
+                f"""        <tr>
+          <td>{rank}</td>
+          <td><a class=\"repo-link\" href=\"{url}\">{repo_name}</a></td>
+          <td>{summary or '-'}</td>
+          <td>{commercial}</td>
+          <td>{stars}</td>
+        </tr>"""
             )
+
+        return f"""    <div class=\"section\">
+      <h2 class=\"section-title\">项目摘要表</h2>
+      <table class=\"table\" role=\"table\">
+        <thead>
+          <tr>
+            <th style=\"width:56px;\">Rank</th>
+            <th style=\"width:220px;\">项目</th>
+            <th>摘要</th>
+            <th style=\"width:80px;\">价值</th>
+            <th style=\"width:80px;\">Stars</th>
+          </tr>
+        </thead>
+        <tbody>
+{''.join(rows)}
+        </tbody>
+      </table>
+    </div>"""
+
+    def _render_badges(self, project: Dict) -> str:
+        badges = [
+            f"<span class=\"badge\">价值:{self._safe_text(project.get('commercial_value_level', 'none'))}</span>",
+            f"<span class=\"badge\">领域:{self._safe_text(project.get('domain', '-'))}</span>",
+            f"<span class=\"badge\">门槛:{self._safe_text(project.get('domain_barrier_level', '-'))}</span>",
+            f"<span class=\"badge\">成熟度:{self._safe_text(project.get('maturity_level', '-'))}</span>",
+            f"<span class=\"badge\">私有化:{self._safe_text(project.get('private_deploy_fit', '-'))}</span>",
+        ]
+
+        if project.get("is_model_service_project"):
+            focus = self._safe_text(project.get("model_service_focus", "Not-clear"))
+            badges.append(f"<span class=\"badge\">模型服务:{focus}</span>")
+
+        language = self._safe_text(project.get("language", ""))
+        if language:
+            badges.append(f"<span class=\"badge\">语言:{language}</span>")
+
+        return "".join(badges)
+
+    def _render_list(self, items: List[str]) -> str:
+        if not items:
+            return "<span class=\"muted\">无</span>"
+        return "<ul class=\"list\">" + "".join([f"<li>{self._safe_text(item)}</li>" for item in items]) + "</ul>"
+
+    def _render_project_details(self, projects: List[Dict]) -> str:
+        if not projects:
+            return """    <div class=\"section\">
+      <h2 class=\"section-title\">项目详情</h2>
+      <p class=\"muted\">暂无可展开的项目详情。</p>
+    </div>"""
+
+        blocks: List[str] = []
+        for project in projects:
+            rank = project.get("rank", "-")
+            repo_name = self._safe_text(project.get("repo_name", ""))
+            summary = self._safe_text(project.get("summary", "") or project.get("description", ""))
+            url = self._safe_text(project.get("url", ""))
+
+            tags = self._as_list(project.get("tags", []))
+            tag_text = "、".join([self._safe_text(tag) for tag in tags[:12]]) if tags else "-"
+
+            blocks.append(
+                f"""      <details class=\"project\">
+        <summary>#{rank} {repo_name} ｜ {summary or '点击展开查看详情'}</summary>
+        <div class=\"detail-body\">
+          <div style=\"margin-bottom:8px;\"><a class=\"repo-link\" href=\"{url}\">{url}</a></div>
+          <div>{self._render_badges(project)}</div>
+
+          <table class=\"detail-grid\" role=\"presentation\">
+            <tr>
+              <td>摘要</td>
+              <td>{self._safe_multiline(project.get('summary', '') or '-')}</td>
+            </tr>
+            <tr>
+              <td>详细描述</td>
+              <td>{self._safe_multiline(project.get('description', '') or '-')}</td>
+            </tr>
+            <tr>
+              <td>使用场景</td>
+              <td>{self._safe_multiline(project.get('use_case', '') or '-')}</td>
+            </tr>
+            <tr>
+              <td>商业价值依据</td>
+              <td>{self._safe_multiline(project.get('commercial_value_reason', '') or '-')}</td>
+            </tr>
+            <tr>
+              <td>领域门槛依据</td>
+              <td>{self._safe_multiline(project.get('domain_barrier_reason', '') or '-')}</td>
+            </tr>
+            <tr>
+              <td>Tags</td>
+              <td>{tag_text}</td>
+            </tr>
+          </table>
+
+          <div class=\"block-title\">机会点</div>
+          {self._render_list(project.get('infra_transformation_opportunities', []))}
+
+          <div class=\"block-title\">已实现功能</div>
+          {self._render_list(project.get('implemented_features', []))}
+
+          <div class=\"block-title\">当前问题</div>
+          {self._render_list(project.get('current_issues', []))}
+
+          <div class=\"block-title\">Roadmap 线索</div>
+          {self._render_list(project.get('roadmap_signals', []))}
+
+          <div class=\"block-title\">未来方向</div>
+          {self._render_list(project.get('future_directions', []))}
+        </div>
+      </details>"""
+            )
+
+        return f"""    <div class=\"section\">
+      <h2 class=\"section-title\">项目详情</h2>
+{''.join(blocks)}
+    </div>"""
+
+    def _render_trend_table(self, title: str, repos: List[Dict], show_delta: bool = False, show_updated: bool = False) -> str:
+        if not repos:
+            return ""
 
         rows: List[str] = []
         for repo in repos[:20]:
-            rows.append(self._format_target_row(repo))
+            rank = repo.get("rank", "-")
+            repo_name = self._safe_text(repo.get("repo_name", ""))
+            url = self._safe_text(repo.get("url", ""))
+            stars = format_number(int(repo.get("stars", 0) or 0))
 
-        table_html = f"""
-        <table style="width:100%;border-collapse:collapse;background:{self.theme['bg']};border-radius:8px;overflow:hidden;">
-            <thead>
-                <tr style="background:{self.theme['border']};text-align:left;">
-                    <th style="padding:10px 12px;font-size:12px;">项目</th>
-                    <th style="padding:10px 12px;font-size:12px;">领域/门槛</th>
-                    <th style="padding:10px 12px;font-size:12px;">成熟度</th>
-                    <th style="padding:10px 12px;font-size:12px;">商业价值</th>
-                    <th style="padding:10px 12px;font-size:12px;">关键机会</th>
-                </tr>
-            </thead>
-            <tbody>
-                {''.join(rows)}
-            </tbody>
-        </table>
-        """
+            extra = "-"
+            if show_delta:
+                delta = int(repo.get("stars_delta", 0) or 0)
+                extra = f"+{format_number(delta)}" if delta >= 0 else format_number(delta)
+            elif show_updated:
+                updated = str(repo.get("updated_at", "") or "")
+                extra = self._safe_text(updated.split("T")[0] if updated else "-")
 
-        return self._section_html("目标机会项目", table_html)
+            rows.append(
+                f"""        <tr>
+          <td>{rank}</td>
+          <td><a class=\"repo-link\" href=\"{url}\">{repo_name}</a></td>
+          <td>{stars}</td>
+          <td>{extra}</td>
+        </tr>"""
+            )
 
-    def _format_target_row(self, repo: Dict) -> str:
-        """格式化目标机会项目行"""
-        repo_name = repo.get("repo_name", "")
-        url = repo.get("url", f"https://github.com/{repo_name}")
-        assessment = repo.get("purpose_assessment", {}) or {}
+        extra_header = "增量" if show_delta else ("更新" if show_updated else "备注")
 
-        domain = assessment.get("domain", "-")
-        barrier_level = assessment.get("domain_barrier_level", "-")
-        maturity = assessment.get("maturity_level", "-")
-        commercial_level = assessment.get("commercial_value_level", "none")
-        opportunities = assessment.get("infra_transformation_opportunities", []) or []
-        opportunity_text = "；".join(opportunities[:2]) if opportunities else "-"
+        return f"""      <h3 style=\"margin:14px 0 8px;font-size:14px;color:#111827;\">{self._safe_text(title)}</h3>
+      <table class=\"table\" role=\"table\">
+        <thead>
+          <tr>
+            <th style=\"width:56px;\">Rank</th>
+            <th>项目</th>
+            <th style=\"width:88px;\">Stars</th>
+            <th style=\"width:88px;\">{extra_header}</th>
+          </tr>
+        </thead>
+        <tbody>
+{''.join(rows)}
+        </tbody>
+      </table>"""
 
-        return f"""
-        <tr style="border-top:1px solid {self.theme['border']};vertical-align:top;">
-            <td style="padding:10px 12px;">
-                <a href="{url}" style="color:{self.theme['text']};text-decoration:none;font-weight:600;">{repo_name}</a>
-                <div style="margin-top:4px;color:{self.theme['text_secondary']};font-size:12px;">{repo.get('summary', '')}</div>
-            </td>
-            <td style="padding:10px 12px;font-size:12px;">
-                <div>{domain}</div>
-                <div style="color:{self.theme['text_secondary']};margin-top:4px;">门槛: {barrier_level}</div>
-            </td>
-            <td style="padding:10px 12px;font-size:12px;">{maturity}</td>
-            <td style="padding:10px 12px;font-size:12px;">{commercial_level}</td>
-            <td style="padding:10px 12px;font-size:12px;color:{self.theme['text_secondary']};">{opportunity_text}</td>
-        </tr>
-        """
+    def _render_compact_trends(self, trends: Dict) -> str:
+        """保留趋势附录，改为紧凑表格。"""
+        parts: List[str] = []
 
-    def _render_rising_top5(self, repos: List[Dict]) -> str:
-        """渲染星标增长 Top 5"""
-        cards = []
-        for repo in repos:
-            cards.append(self._format_compact_card(repo, trend="up"))
+        rising = trends.get("rising_top5", [])
+        if rising:
+            parts.append(self._render_trend_table("星标增长 Top", rising, show_delta=True))
 
-        return self._section_html("星标增长 Top 5", "\n".join(cards))
+        new_entries = trends.get("new_entries", [])
+        if new_entries:
+            parts.append(self._render_trend_table("新晋项目", new_entries))
 
-    def _render_new_entries(self, repos: List[Dict]) -> str:
-        """渲染新晋项目"""
-        if not repos:
+        active = trends.get("active", [])
+        if active:
+            parts.append(self._render_trend_table("活跃项目", active, show_updated=True))
+
+        if not parts:
             return ""
 
-        cards = []
-        for repo in repos[:10]:
-            cards.append(self._format_compact_card(repo, is_new=True))
-
-        return self._section_html(f"新晋项目 ({len(repos)})", "\n".join(cards))
-
-    def _render_active(self, repos: List[Dict]) -> str:
-        """渲染活跃项目"""
-        if not repos:
-            return ""
-
-        cards = []
-        for repo in repos[:10]:
-            cards.append(self._format_active_card(repo))
-
-        return self._section_html("活跃项目", "\n".join(cards))
-
-    def _render_stats(self, trends: Dict, opportunities: List[Dict]) -> str:
-        """渲染统计信息"""
-        new_count = len(trends.get("new_entries", []))
-        rising_count = len(trends.get("rising_top5", []))
-        surging_count = len(trends.get("surging", []))
-        active_count = len(trends.get("active", []))
-        opportunity_count = len(opportunities)
-
-        return self._section_html("趋势概览", f"""
-        <div class="stats-grid">
-            <div class="stat-item">
-                <div class="stat-value">{new_count}</div>
-                <div class="stat-label">新晋项目</div>
-            </div>
-            <div class="stat-item">
-                <div class="stat-value">{rising_count}</div>
-                <div class="stat-label">上升项目</div>
-            </div>
-            <div class="stat-item">
-                <div class="stat-value">{active_count}</div>
-                <div class="stat-label">活跃项目</div>
-            </div>
-        </div>
-        <div style="margin-top:12px;color:{self.theme['text_secondary']};font-size:12px;">
-            商业机会候选（阈值 {PUSH_MIN_COMMERCIAL_LEVEL}）: <strong style="color:{self.theme['text']};">{opportunity_count}</strong>
-        </div>
-        """)
-
-    def _format_repo_card(self, repo: Dict, show_details: bool = True) -> str:
-        """格式化单个仓库卡片"""
-        rank = repo.get("rank", 0)
-        repo_name = repo.get("repo_name", "")
-        stars_delta = repo.get("stars_delta", 0)
-        stars = repo.get("stars", 0)
-        forks = repo.get("forks", 0)
-        language = repo.get("language", "")
-        url = repo.get("url", f"https://github.com/{repo_name}")
-
-        # 星标变化指示
-        if stars_delta > 0:
-            stars_indicator = f'<span class="rank-change rank-up">+{format_number(stars_delta)}</span>'
-        elif stars_delta < 0:
-            stars_indicator = f'<span class="rank-change rank-down">{format_number(stars_delta)}</span>'
-        else:
-            stars_indicator = '<span class="rank-change rank-same">-</span>'
-
-        # 语言标签
-        language_badge = ""
-        if language:
-            language_badge = f'<span class="badge badge-language">{language}</span>'
-
-        # 分类标签
-        category_badge = ""
-        if repo.get("category_zh"):
-            category_badge = f'<span class="badge badge-category">{repo.get("category_zh")}</span>'
-
-        # 解决的问题标签
-        solves_html = ""
-        if show_details and repo.get("solves"):
-            solves_tags = [f'<span class="solve-tag">{s}</span>' for s in repo.get("solves", [])[:4]]
-            solves_html = f'<div class="solves-list">{"".join(solves_tags)}</div>'
-
-        tags_html = ""
-        if show_details and repo.get("tags"):
-            tag_items = [f'<span class="solve-tag">#{tag}</span>' for tag in repo.get("tags", [])[:4]]
-            tags_html = f'<div class="solves-list" style="margin-top:6px;">{"".join(tag_items)}</div>'
-
-        # 详细信息
-        details_html = ""
-        if show_details:
-            summary = repo.get("summary", "")
-            description = repo.get("description", "")
-
-            detail_parts = []
-            if summary:
-                detail_parts.append(f'<p style="margin: 0 0 8px; color: {self.theme["text_secondary"]}; font-size: 14px; line-height: 1.5;">{summary}</p>')
-            if description:
-                detail_parts.append(f'<p style="margin: 0; color: {self.theme["text_secondary"]}; font-size: 13px; line-height: 1.5; opacity: 0.8;">{description}</p>')
-
-            details_html = "\n".join(detail_parts)
-
-        return f"""        <div class="repo-card">
-            <div class="repo-main">
-                <span class="repo-rank">#{rank}</span>
-                <span class="repo-name"><a href="{url}">{repo_name}</a></span>
-                <div class="repo-stats">
-                    {stars_indicator}
-                    <span class="stars">{format_number(stars)}</span>
-                </div>
-            </div>
-            <div class="repo-content">
-                {details_html}
-                <div style="margin-top: 10px;">
-                    {category_badge}
-                    {language_badge}
-                    {solves_html}
-                    {tags_html}
-                </div>
-            </div>
-        </div>"""
-
-    def _format_compact_card(self, repo: Dict, trend: str = None, is_new: bool = False) -> str:
-        """格式化紧凑卡片"""
-        rank = repo.get("rank", 0)
-        repo_name = repo.get("repo_name", "")
-        url = repo.get("url", f"https://github.com/{repo_name}")
-        stars = repo.get("stars", 0)
-
-        # 变化指示
-        change_html = ""
-        if is_new:
-            change_html = '<span class="badge badge-new">NEW</span>'
-        elif trend == "up":
-            stars_delta = repo.get("stars_delta", 0)
-            change_html = f'<span class="rank-change rank-up">+{format_number(stars_delta)}</span>'
-
-        summary_html = ""
-        if repo.get("summary"):
-            summary_html = f'<div style="padding: 8px 14px 0; font-size: 13px; color: {self.theme["text_secondary"]}; line-height: 1.5;">{repo.get("summary")}</div>'
-
-        return f"""            <div class="compact-card">
-                {change_html}
-                <span style="font-weight: 600; min-width: 32px; font-size: 13px; color: {self.theme['text']};">#{rank}</span>
-                <span style="flex-grow: 1; margin: 0 10px;">
-                    <a href="{url}" style="color: {self.theme['text']}; text-decoration: none; font-size: 14px; font-weight: 500;">{repo_name}</a>
-                </span>
-                <span style="color: {self.theme['text_secondary']}; font-size: 12px;">{format_number(stars)}</span>
-            </div>{summary_html}"""
-
-    def _format_active_card(self, repo: Dict) -> str:
-        """格式化活跃项目卡片"""
-        repo_name = repo.get("repo_name", "")
-        url = repo.get("url", f"https://github.com/{repo_name}")
-        stars = repo.get("stars", 0)
-        updated_at = repo.get("updated_at", "")
-
-        # 简单的时间格式化
-        time_ago = "最近"
-        if updated_at:
-            time_ago = updated_at.split("T")[0]
-
-        summary_html = ""
-        if repo.get("summary"):
-            summary_html = f'<div style="padding: 8px 14px 0; font-size: 13px; color: {self.theme["text_secondary"]}; line-height: 1.5;">{repo.get("summary")}</div>'
-
-        return f"""            <div class="compact-card">
-                <span style="flex-grow: 1; margin: 0 10px;">
-                    <a href="{url}" style="color: {self.theme['text']}; text-decoration: none; font-size: 14px; font-weight: 500;">{repo_name}</a>
-                </span>
-                <span style="color: {self.theme['text_secondary']}; font-size: 12px;">{format_number(stars)}</span>
-                <span style="color: {self.theme['text_secondary']}; font-size: 11px; margin-left: 8px;">更新: {time_ago}</span>
-            </div>{summary_html}"""
-
-    def _section_html(self, title: str, content: str) -> str:
-        """生成一个完整的 section"""
-        return f"""        <div class="section">
-            <h2 class="section-title">{title}</h2>
-            {content}
-        </div>"""
+        return f"""    <div class=\"section\">
+      <h2 class=\"section-title\">趋势附录（紧凑）</h2>
+{''.join(parts)}
+    </div>"""
 
 
-def generate_email_html(trends: Dict, date: str, theme: str = "blue") -> str:
-    """便捷函数：生成邮件 HTML"""
+def generate_email_html(
+    trends: Dict,
+    date: str,
+    theme: str = "blue",
+    report: Optional[Dict] = None,
+    single_repo_mode: bool = False,
+) -> str:
+    """便捷函数：生成邮件 HTML。"""
     reporter = EmailReporter(theme)
-    return reporter.generate_email_html(trends, date)
+    return reporter.generate_email_html(
+        trends=trends,
+        date=date,
+        report=report,
+        single_repo_mode=single_repo_mode,
+    )

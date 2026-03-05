@@ -4,11 +4,13 @@ Claude Summarizer - AI 总结和分类 GitHub 仓库
 """
 
 import json
+import ast
+import re
 import threading
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Callable, Deque, Dict, List, Optional
+from typing import Callable, Deque, Dict, List, Optional, Tuple
 
 from anthropic import Anthropic
 
@@ -18,6 +20,7 @@ from src.config import (
     CATEGORIES,
     CLAUDE_MAX_TOKENS,
     CLAUDE_MODEL,
+    LLM_JSON_REPAIR_RETRIES,
     MODEL_MAX_CONCURRENCY,
     MODEL_MAX_RPM,
     ZHIPU_API_KEY,
@@ -70,6 +73,7 @@ class ClaudeSummarizer:
         max_concurrency: Optional[int] = None,
         max_rpm: Optional[int] = None,
         extra_prompt: Optional[str] = None,
+        json_repair_retries: Optional[int] = None,
     ):
         """
         初始化 Claude 客户端配置
@@ -87,6 +91,10 @@ class ClaudeSummarizer:
         self.max_tokens = CLAUDE_MAX_TOKENS
         self.max_concurrency = max(1, max_concurrency or MODEL_MAX_CONCURRENCY)
         self.max_rpm = max(1, max_rpm or MODEL_MAX_RPM)
+        self.json_repair_retries = max(
+            0,
+            LLM_JSON_REPAIR_RETRIES if json_repair_retries is None else int(json_repair_retries),
+        )
         self.extra_prompt = (extra_prompt if extra_prompt is not None else ANALYSIS_CUSTOM_PROMPT).strip()
         self._rpm_limiter = _RpmLimiter(self.max_rpm)
 
@@ -190,7 +198,37 @@ class ClaudeSummarizer:
             result_text = self._extract_response_text(response)
             if not result_text:
                 return None
-            return self._parse_single_response(result_text, repo)
+
+            parsed = self._parse_single_response(result_text, repo)
+            if parsed:
+                return parsed
+
+            if self.json_repair_retries <= 0:
+                return None
+
+            repair_source = result_text
+            for attempt in range(1, self.json_repair_retries + 1):
+                repaired_text = self._request_json_repair(
+                    repo_name=repo_name,
+                    broken_text=repair_source,
+                    attempt=attempt,
+                )
+                if not repaired_text:
+                    continue
+
+                repaired = self._parse_single_response(
+                    repaired_text,
+                    repo,
+                    log_error=False,
+                )
+                if repaired:
+                    print(f"♻️ JSON 修复成功 {repo_name} (attempt={attempt})")
+                    return repaired
+
+                repair_source = repaired_text
+
+            print(f"❌ JSON 修复失败 {repo_name}")
+            return None
 
         except Exception as error:
             print(f"❌ Claude API 调用失败 {repo_name}: {error}")
@@ -209,6 +247,284 @@ class ClaudeSummarizer:
 
         return "\n".join(texts).strip()
 
+    @staticmethod
+    def _remove_trailing_commas(text: str) -> str:
+        """移除 JSON 中对象/数组闭合前的多余逗号。"""
+        return re.sub(r",\s*([}\]])", r"\1", text)
+
+    @staticmethod
+    def _extract_fenced_json_blocks(text: str) -> List[str]:
+        """提取 Markdown 代码块中的 JSON 文本。"""
+        if not text:
+            return []
+
+        pattern = re.compile(r"```(?:json)?\s*([\s\S]*?)```", re.IGNORECASE)
+        blocks: List[str] = []
+
+        for match in pattern.finditer(text):
+            block = str(match.group(1) or "").strip()
+            if block:
+                blocks.append(block)
+
+        return blocks
+
+    @staticmethod
+    def _extract_first_balanced_json(text: str) -> str:
+        """从文本中提取首个括号平衡的 JSON 片段（对象或数组）。"""
+        if not text:
+            return ""
+
+        start = -1
+        stack: List[str] = []
+        in_string = False
+        escaped = False
+
+        for index, char in enumerate(text):
+            if start < 0:
+                if char in "[{":
+                    start = index
+                    stack.append(char)
+                continue
+
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+
+            if char == '"':
+                in_string = True
+                continue
+
+            if char in "[{":
+                stack.append(char)
+                continue
+
+            if char in "]}":
+                if not stack:
+                    continue
+
+                opener = stack[-1]
+                if (opener == "{" and char == "}") or (opener == "[" and char == "]"):
+                    stack.pop()
+                    if not stack:
+                        return text[start : index + 1].strip()
+                else:
+                    start = -1
+                    stack = []
+                    in_string = False
+                    escaped = False
+
+        return ""
+
+    def _build_json_candidates(self, result_text: str) -> List[str]:
+        """构建 JSON 解析候选文本列表。"""
+        raw = str(result_text or "").strip()
+        if not raw:
+            return []
+
+        candidates: List[str] = []
+        seen: set[str] = set()
+
+        def add_candidate(value: str) -> None:
+            candidate = str(value or "").strip()
+            if not candidate or candidate in seen:
+                return
+            seen.add(candidate)
+            candidates.append(candidate)
+
+        cleaned = self._clean_json_text(raw)
+        add_candidate(raw)
+        add_candidate(cleaned)
+
+        for block in self._extract_fenced_json_blocks(raw):
+            add_candidate(block)
+
+        add_candidate(self._extract_first_balanced_json(raw))
+        add_candidate(self._extract_first_balanced_json(cleaned))
+
+        return candidates
+
+    def _build_json_variants(self, candidate: str) -> List[str]:
+        """构建单条候选文本的修复变体。"""
+        variants: List[str] = []
+        seen: set[str] = set()
+
+        def add_variant(value: str) -> None:
+            variant = str(value or "").strip().lstrip("\ufeff")
+            if not variant or variant in seen:
+                return
+            seen.add(variant)
+            variants.append(variant)
+
+        add_variant(candidate)
+
+        normalized_quotes = (
+            candidate.replace("“", '"')
+            .replace("”", '"')
+            .replace("‘", "'")
+            .replace("’", "'")
+        )
+        add_variant(normalized_quotes)
+
+        prefix_removed = re.sub(r"^\s*json\s*", "", normalized_quotes, flags=re.IGNORECASE)
+        add_variant(prefix_removed)
+
+        for variant in list(variants):
+            add_variant(self._remove_trailing_commas(variant))
+
+        return variants
+
+    def _load_json_payload(self, result_text: str) -> Tuple[Optional[object], str]:
+        """尝试从模型输出中加载 JSON 载荷。"""
+        last_error = "empty response"
+
+        for candidate in self._build_json_candidates(result_text):
+            for variant in self._build_json_variants(candidate):
+                try:
+                    return json.loads(variant), ""
+                except json.JSONDecodeError as error:
+                    last_error = f"{error.msg} (line {error.lineno}, col {error.colno})"
+
+                try:
+                    literal = ast.literal_eval(variant)
+                    if isinstance(literal, (dict, list)):
+                        return literal, ""
+                except (SyntaxError, ValueError):
+                    continue
+
+        return None, last_error
+
+    def _request_json_repair(self, repo_name: str, broken_text: str, attempt: int) -> str:
+        """调用模型进行 JSON 文本修复。"""
+        clipped_text = self._clip_text(broken_text, 12000)
+        prompt = f"""你是 JSON 修复器。请将输入修复为合法 JSON。
+
+要求：
+1. 只输出 JSON（对象或数组），不要解释、不要 Markdown 代码块。
+2. 尽量保留原字段语义，不要凭空新增业务字段。
+3. 字段名必须是双引号，移除多余逗号，补全缺失括号。
+
+待修复文本：
+{clipped_text}
+"""
+
+        self._rpm_limiter.acquire()
+
+        try:
+            response = execute_with_429_retry(
+                operation=lambda: self._create_client().messages.create(
+                    model=self.model,
+                    max_tokens=min(self.max_tokens, 2048),
+                    temperature=0,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": prompt,
+                        }
+                    ],
+                ),
+                context=f"Claude JSON 修复 {repo_name} (attempt={attempt})",
+            )
+        except Exception as error:
+            print(f"⚠️ JSON 修复请求失败 {repo_name}: {error}")
+            return ""
+
+        return self._extract_response_text(response)
+
+    @staticmethod
+    def _format_recent_activity(items: object, max_items: int = 6) -> str:
+        """将近期 Issue/PR 活动格式化为 Prompt 文本。"""
+        if not isinstance(items, list) or not items:
+            return "N/A"
+
+        lines: List[str] = []
+        for item in items[:max_items]:
+            if not isinstance(item, dict):
+                continue
+
+            number = item.get("number")
+            title = str(item.get("title") or "").strip()
+            state = str(item.get("state") or "unknown").strip() or "unknown"
+            updated_at = str(item.get("updated_at") or "").strip()
+            comments = int(item.get("comments") or 0)
+
+            raw_labels = item.get("labels")
+            labels = raw_labels if isinstance(raw_labels, list) else []
+            label_text = ",".join([str(label).strip() for label in labels if str(label).strip()][:3])
+            if not label_text:
+                label_text = "-"
+
+            number_text = f"#{number}" if number else "#-"
+            title_text = title[:120] if title else "(无标题)"
+            lines.append(
+                f"- {number_text} [{state}] {title_text} "
+                f"(updated={updated_at or '-'}, comments={comments}, labels={label_text})"
+            )
+
+        return "\n".join(lines) if lines else "N/A"
+
+    @staticmethod
+    def _clip_text(value: object, max_length: int) -> str:
+        """按长度限制截断文本。"""
+        text = str(value or "").strip()
+        if len(text) <= max_length:
+            return text
+        return text[:max_length].rstrip() + "..."
+
+    def _format_focus_threads(
+        self,
+        items: object,
+        last_comments_limit: int = 4,
+        max_threads: int = 3,
+    ) -> str:
+        """格式化二阶段深挖条目（原始正文 + 尾部对话）。"""
+        if not isinstance(items, list) or not items:
+            return "N/A"
+
+        lines: List[str] = []
+        bounded_last_comments = max(1, int(last_comments_limit))
+
+        for item in items[:max_threads]:
+            if not isinstance(item, dict):
+                continue
+
+            number = item.get("number")
+            title = str(item.get("title") or "").strip()
+            state = str(item.get("state") or "").strip() or "unknown"
+            updated_at = str(item.get("updated_at") or "").strip() or "-"
+            comments_total = int(item.get("comments_total") or 0)
+            number_text = f"#{number}" if number else "#-"
+            title_text = title[:120] if title else "(无标题)"
+
+            lines.append(
+                f"- {number_text} [{state}] {title_text} "
+                f"(updated={updated_at}, comments_total={comments_total})"
+            )
+
+            body = self._clip_text(item.get("body"), 900)
+            lines.append("  原始内容:")
+            lines.append(f"  {body if body else 'N/A'}")
+
+            comments = item.get("last_comments") if isinstance(item.get("last_comments"), list) else []
+            if not comments:
+                lines.append("  最近对话: N/A")
+                continue
+
+            lines.append(f"  最近对话（最后{bounded_last_comments}条）:")
+            for comment in comments[:bounded_last_comments]:
+                if not isinstance(comment, dict):
+                    continue
+                author = str(comment.get("author") or "").strip() or "unknown"
+                created_at = str(comment.get("created_at") or "").strip() or "-"
+                comment_body = self._clip_text(comment.get("body"), 260)
+                lines.append(f"  - @{author} {created_at}: {comment_body if comment_body else '(空内容)'}")
+
+        return "\n".join(lines) if lines else "N/A"
+
     def _build_single_prompt(self, repo: Dict) -> str:
         """构建单仓库分析 Prompt"""
         repo_name = repo.get("repo_name")
@@ -217,10 +533,26 @@ class ClaudeSummarizer:
         topics = repo.get("topics", [])
         readme = repo.get("readme_summary", "")
         keyword_hits = repo.get("keyword_hits", [])
+        recent_issues = repo.get("recent_issues", [])
+        recent_pull_requests = repo.get("recent_pull_requests", [])
+        focus_issue_threads = repo.get("focus_issue_threads", [])
+        focus_pr_threads = repo.get("focus_pr_threads", [])
+        activity_detail_last_comments = repo.get("activity_detail_last_comments", 4)
+        activity_window_days = repo.get("activity_window_days", 30)
 
         category_text = "\n".join([f"  - {key}: {zh}" for key, zh in REPO_CATEGORIES.items()])
         topic_text = ", ".join(topics[:8]) if topics else "N/A"
         keyword_text = ", ".join(keyword_hits) if keyword_hits else "N/A"
+        issue_activity_text = self._format_recent_activity(recent_issues)
+        pr_activity_text = self._format_recent_activity(recent_pull_requests)
+        issue_focus_text = self._format_focus_threads(
+            focus_issue_threads,
+            last_comments_limit=int(activity_detail_last_comments) if str(activity_detail_last_comments).isdigit() else 4,
+        )
+        pr_focus_text = self._format_focus_threads(
+            focus_pr_threads,
+            last_comments_limit=int(activity_detail_last_comments) if str(activity_detail_last_comments).isdigit() else 4,
+        )
         extra_prompt_text = self.extra_prompt if self.extra_prompt else "无"
 
         return f"""你是一个开源项目分析专家。请分析这个 GitHub 仓库并输出结构化结果。
@@ -234,6 +566,18 @@ Topics: {topic_text}
 
 README 摘要:
 {readme[:1000] if readme else 'N/A'}
+
+近 {activity_window_days} 天 Issues 活动:
+{issue_activity_text}
+
+近 {activity_window_days} 天 PR 活动:
+{pr_activity_text}
+
+二阶段深挖（原始Issue + 最后{activity_detail_last_comments}条对话）:
+{issue_focus_text}
+
+二阶段深挖（原始PR + 最后{activity_detail_last_comments}条对话）:
+{pr_focus_text}
 
 ---
 
@@ -254,6 +598,8 @@ README 摘要:
 - 判断该项目是否属于“使用模型服务，尤其基于 GPU 模型服务”的项目
 - 评估其所在领域、领域门槛（高/中/低）与门槛理由
 - 评估开发进展：已实现功能、当前问题、未来方向（作者 roadmap + 你推测的方向）
+- 必须基于 README + 近窗口期 Issue/PR 活动，识别研发重点变化、需求趋势与交付节奏
+- 对二阶段深挖条目，仅依据“原始Issue/PR内容 + 最近尾部对话”抽取结论，不要虚构缺失上下文
 - 评估商业价值：
     - strong: 产品较成熟，且具备可私有化部署改造与差异化盈利机会（例如私有基建设备、NPU 替代 GPU 等）
     - weak: 产品尚不成熟，但符合行业趋势且持续贡献，并具备一定改造与盈利空间
@@ -287,9 +633,8 @@ README 摘要:
 
 【输出格式】
 
-严格输出 JSON 对象，不要有任何额外说明：
+严格输出 JSON 对象，不要有任何额外说明，也不要输出 Markdown 代码块标记（```）：
 
-```json
 {{
   "repo_name": "{repo_name}",
   "summary": "一句话摘要",
@@ -318,7 +663,6 @@ README 摘要:
     "recommended_for_push": true
   }}
 }}
-```
 """
 
     @staticmethod
@@ -421,65 +765,68 @@ README 摘要:
             cleaned = cleaned[:-3]
         return cleaned.strip()
 
-    def _parse_single_response(self, result_text: str, original_repo: Dict) -> Optional[Dict]:
+    def _parse_single_response(
+        self,
+        result_text: str,
+        original_repo: Dict,
+        log_error: bool = True,
+    ) -> Optional[Dict]:
         """解析单仓库响应"""
-        cleaned = self._clean_json_text(result_text)
-
-        try:
-            parsed = json.loads(cleaned)
-
-            if isinstance(parsed, list):
-                if not parsed:
-                    return None
-                parsed = parsed[0]
-
-            if not isinstance(parsed, dict):
-                return None
-
-            repo_name = parsed.get("repo_name") or original_repo.get("repo_name")
-            if not repo_name:
-                return None
-
-            category = parsed.get("category", "other")
-            if category not in REPO_CATEGORIES:
-                category = "other"
-
-            model_tags = self._normalize_tags(parsed.get("tags", []))
-            base_tags = self._normalize_tags(original_repo.get("search_tags", []))
-            merged_tags = self._normalize_tags([*base_tags, *model_tags])
-            purpose_assessment = self._normalize_purpose_assessment(parsed.get("purpose_assessment", {}))
-
-            if purpose_assessment["commercial_value_level"] == "strong":
-                merged_tags = self._normalize_tags([*merged_tags, "商业价值:强"])
-            elif purpose_assessment["commercial_value_level"] == "weak":
-                merged_tags = self._normalize_tags([*merged_tags, "商业价值:弱"])
-            else:
-                merged_tags = self._normalize_tags([*merged_tags, "商业价值:无"])
-
-            return {
-                "repo_name": repo_name,
-                "summary": parsed.get("summary", f"{repo_name} 项目"),
-                "description": parsed.get("description", ""),
-                "use_case": parsed.get("use_case", ""),
-                "solves": parsed.get("solves", []),
-                "category": category,
-                "category_zh": parsed.get("category_zh", REPO_CATEGORIES.get(category, "其他")),
-                "tech_stack": parsed.get("tech_stack", []),
-                "tags": merged_tags,
-                "purpose_assessment": purpose_assessment,
-                "language": original_repo.get("language", ""),
-                "topics": original_repo.get("topics", []),
-                "readme_summary": original_repo.get("readme_summary", ""),
-                "owner": original_repo.get("owner", ""),
-                "url": original_repo.get("url", ""),
-                "repo_updated_at": original_repo.get("updated_at", ""),
-            }
-
-        except json.JSONDecodeError as error:
-            repo_name = original_repo.get("repo_name") or original_repo.get("name", "unknown")
-            print(f"❌ JSON 解析失败 {repo_name}: {error}")
-            print(f"   原始响应: {cleaned[:400]}...")
+        parsed, parse_error = self._load_json_payload(result_text)
+        if parsed is None:
+            if log_error:
+                repo_name = original_repo.get("repo_name") or original_repo.get("name", "unknown")
+                cleaned = self._clean_json_text(result_text)
+                print(f"❌ JSON 解析失败 {repo_name}: {parse_error}")
+                print(f"   原始响应: {cleaned[:400]}...")
             return None
+
+        if isinstance(parsed, list):
+            if not parsed:
+                return None
+            parsed = parsed[0]
+
+        if not isinstance(parsed, dict):
+            return None
+
+        repo_name = parsed.get("repo_name") or original_repo.get("repo_name")
+        if not repo_name:
+            return None
+
+        category = parsed.get("category", "other")
+        if category not in REPO_CATEGORIES:
+            category = "other"
+
+        model_tags = self._normalize_tags(parsed.get("tags", []))
+        base_tags = self._normalize_tags(original_repo.get("search_tags", []))
+        merged_tags = self._normalize_tags([*base_tags, *model_tags])
+        purpose_assessment = self._normalize_purpose_assessment(parsed.get("purpose_assessment", {}))
+
+        if purpose_assessment["commercial_value_level"] == "strong":
+            merged_tags = self._normalize_tags([*merged_tags, "商业价值:强"])
+        elif purpose_assessment["commercial_value_level"] == "weak":
+            merged_tags = self._normalize_tags([*merged_tags, "商业价值:弱"])
+        else:
+            merged_tags = self._normalize_tags([*merged_tags, "商业价值:无"])
+
+        return {
+            "repo_name": repo_name,
+            "summary": parsed.get("summary", f"{repo_name} 项目"),
+            "description": parsed.get("description", ""),
+            "use_case": parsed.get("use_case", ""),
+            "solves": parsed.get("solves", []),
+            "category": category,
+            "category_zh": parsed.get("category_zh", REPO_CATEGORIES.get(category, "其他")),
+            "tech_stack": parsed.get("tech_stack", []),
+            "tags": merged_tags,
+            "purpose_assessment": purpose_assessment,
+            "language": original_repo.get("language", ""),
+            "topics": original_repo.get("topics", []),
+            "readme_summary": original_repo.get("readme_summary", ""),
+            "owner": original_repo.get("owner", ""),
+            "url": original_repo.get("url", ""),
+            "repo_updated_at": original_repo.get("updated_at", ""),
+        }
 
     def _fallback_summary(self, repo: Dict) -> Dict:
         """降级方案：生成基础摘要（不作为成功请求落库）"""

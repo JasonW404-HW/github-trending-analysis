@@ -3,7 +3,8 @@
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List
+from typing import List, Optional, Tuple
+from urllib.parse import urlparse
 
 from src.application.opportunity_report_builder import build_opportunity_report_markdown
 from src.config import (
@@ -95,6 +96,33 @@ def print_analysis_summary(analysis: AnalysisRunResult) -> None:
     print(f"   新增分析成功: {stats.success_count} 个，降级: {stats.fallback_count} 个")
 
 
+def _build_email_report_payload(date: str, projects: List[dict]) -> dict:
+    """构建邮件报表数据负载。"""
+    strong_count = len(
+        [
+            project
+            for project in projects
+            if str(project.get("commercial_value_level", "")).lower() == "strong"
+        ]
+    )
+    weak_count = len(
+        [
+            project
+            for project in projects
+            if str(project.get("commercial_value_level", "")).lower() == "weak"
+        ]
+    )
+
+    return {
+        "date": date,
+        "min_level": PUSH_MIN_COMMERCIAL_LEVEL,
+        "total_candidates": len(projects),
+        "strong_count": strong_count,
+        "weak_count": weak_count,
+        "projects": projects,
+    }
+
+
 def _print_runtime_header(today: str) -> None:
     print(f"[目标日期] {today}")
     print(f"[话题标签] #{TOPIC}")
@@ -107,6 +135,84 @@ def _print_runtime_header(today: str) -> None:
         )
     if ANALYSIS_CUSTOM_PROMPT:
         print("[分析Prompt] 已启用自定义提示词")
+
+
+def _normalize_repo_identifier(raw_value: str) -> Optional[str]:
+    """标准化仓库标识，支持 owner/repo 与 GitHub URL。"""
+    value = (raw_value or "").strip()
+    if not value:
+        return None
+
+    if value.startswith("http://") or value.startswith("https://"):
+        parsed = urlparse(value)
+        if parsed.netloc.lower() not in {"github.com", "www.github.com"}:
+            return None
+
+        parts = [part for part in (parsed.path or "").split("/") if part]
+        if len(parts) < 2:
+            return None
+
+        owner, repo = parts[0], parts[1]
+    else:
+        normalized = value.rstrip("/")
+        if normalized.endswith(".git"):
+            normalized = normalized[:-4]
+
+        if normalized.count("/") != 1:
+            return None
+
+        owner, repo = normalized.split("/", 1)
+
+    owner = owner.strip()
+    repo = repo.strip()
+    if repo.endswith(".git"):
+        repo = repo[:-4].strip()
+
+    if not owner or not repo:
+        return None
+
+    return f"{owner}/{repo}"
+
+
+def _extract_repo_argument(args: List[str]) -> Tuple[Optional[str], Optional[str]]:
+    """提取并校验 --repo 参数。"""
+    repo_values: List[str] = []
+    index = 0
+
+    while index < len(args):
+        argument = args[index]
+
+        if argument == "--repo":
+            if index + 1 >= len(args):
+                return None, "参数 --repo 缺少仓库值（示例: owner/repo）"
+
+            value = args[index + 1].strip()
+            if not value or value.startswith("--"):
+                return None, "参数 --repo 缺少仓库值（示例: owner/repo）"
+
+            repo_values.append(value)
+            index += 2
+            continue
+
+        if argument.startswith("--repo="):
+            value = argument.split("=", 1)[1].strip()
+            if not value:
+                return None, "参数 --repo 缺少仓库值（示例: owner/repo）"
+            repo_values.append(value)
+
+        index += 1
+
+    if not repo_values:
+        return None, None
+
+    if len(repo_values) > 1:
+        return None, "参数 --repo 仅允许指定一次"
+
+    normalized = _normalize_repo_identifier(repo_values[0])
+    if not normalized:
+        return None, "仓库格式无效，请使用 owner/repo 或 GitHub URL"
+
+    return normalized, None
 
 
 def run_daily_command() -> int:
@@ -154,8 +260,18 @@ def run_daily_command() -> int:
         print()
 
         print("[步骤 5/8] 生成 HTML 邮件...")
+        opportunity_report = db.get_opportunity_report(
+            date=today,
+            min_level=PUSH_MIN_COMMERCIAL_LEVEL,
+            limit=1000,
+        )
         email_reporter = EmailReporter()
-        html_content = email_reporter.generate_email_html(trends, today)
+        html_content = email_reporter.generate_email_html(
+            trends,
+            today,
+            report=opportunity_report,
+            single_repo_mode=False,
+        )
         print(f"   HTML 长度: {len(html_content)} 字符")
         print()
 
@@ -249,6 +365,124 @@ def run_fetch_only_command() -> int:
         db.close()
 
 
+def run_single_repo_command(repo_identifier: str) -> int:
+    """仅分析指定仓库，并发送邮件。"""
+    print_banner()
+
+    if not check_environment():
+        return 1
+
+    today = get_today_date()
+    _print_runtime_header(today)
+    print(f"[目标仓库] {repo_identifier}")
+    print()
+
+    db = Database(DB_PATH)
+    db.init_db()
+    workflow = TrendingWorkflow(db)
+
+    try:
+        print("[步骤 1/5] 获取目标仓库信息...")
+        repo = workflow.fetch_single_repository(repo_identifier)
+        if not repo:
+            print(f"   ❌ 未找到仓库或无权限访问: {repo_identifier}")
+            return 1
+        print(f"   成功获取仓库: {repo.get('repo_name', repo_identifier)}")
+        print()
+
+        print("[步骤 2/5] 保存仓库快照（写入 daily/history）...")
+        workflow.persist_snapshot(date=today, repos=[repo])
+        print()
+
+        print("[步骤 3/5] AI 分析目标仓库...")
+        selection = RepoSelectionResult(
+            repos=[repo],
+            total_count=1,
+            selected_count=1,
+            keywords=[],
+            match_mode=ANALYSIS_KEYWORD_MATCH_MODE,
+        )
+        analysis = workflow.analyze_selected(selection)
+        print_analysis_summary(analysis)
+        print()
+
+        print("[步骤 4/5] 计算单仓库趋势...")
+        trends = workflow.calculate_trends([repo], today, analysis)
+        print(
+            f"   Top: {len(trends.get('top_20', []))} 个, "
+            f"新晋: {len(trends.get('new_entries', []))} 个, "
+            f"活跃: {len(trends.get('active', []))} 个"
+        )
+        print()
+
+        print("[步骤 5/5] 发送邮件...")
+        summary = analysis.summary_map.get(repo_identifier) or analysis.summary_map.get(repo.get("repo_name", "")) or {}
+        assessment = summary.get("purpose_assessment", {}) if isinstance(summary, dict) else {}
+        if not isinstance(assessment, dict):
+            assessment = {}
+
+        single_project = {
+            "rank": repo.get("rank", 1),
+            "repo_name": repo.get("repo_name", repo_identifier),
+            "owner": repo.get("owner", ""),
+            "stars": repo.get("stars", 0),
+            "stars_delta": repo.get("stars_delta", 0),
+            "language": repo.get("language", ""),
+            "url": repo.get("url", ""),
+            "summary": summary.get("summary", ""),
+            "description": summary.get("description", ""),
+            "use_case": summary.get("use_case", ""),
+            "tags": summary.get("tags", []) if isinstance(summary.get("tags", []), list) else [],
+            "domain": assessment.get("domain", ""),
+            "domain_barrier_level": assessment.get("domain_barrier_level", ""),
+            "domain_barrier_reason": assessment.get("domain_barrier_reason", ""),
+            "maturity_level": assessment.get("maturity_level", ""),
+            "is_model_service_project": bool(assessment.get("is_model_service_project", False)),
+            "model_service_focus": assessment.get("model_service_focus", ""),
+            "commercial_value_level": assessment.get("commercial_value_level", "none"),
+            "commercial_value_reason": assessment.get("commercial_value_reason", ""),
+            "recommended_for_push": bool(assessment.get("recommended_for_push", True)),
+            "private_deploy_fit": assessment.get("private_deploy_fit", ""),
+            "implemented_features": assessment.get("implemented_features", []) or [],
+            "current_issues": assessment.get("current_issues", []) or [],
+            "roadmap_signals": assessment.get("roadmap_signals", []) or [],
+            "future_directions": assessment.get("future_directions", []) or [],
+            "infra_transformation_opportunities": assessment.get("infra_transformation_opportunities", []) or [],
+        }
+
+        email_report = _build_email_report_payload(today, [single_project])
+        email_reporter = EmailReporter()
+        html_content = email_reporter.generate_email_html(
+            trends,
+            today,
+            report=email_report,
+            single_repo_mode=True,
+        )
+
+        sender = ResendSender(RESEND_API_KEY or "")
+        result = sender.send_email(
+            to=EMAIL_TO or "",
+            subject=f"📊 GitHub Repo Focus - {repo_identifier} - {today}",
+            html_content=html_content,
+            from_email=RESEND_FROM_EMAIL,
+        )
+
+        if result["success"]:
+            print(f"   ✅ 邮件发送成功! ID: {result['id']}")
+        else:
+            print(f"   ❌ 邮件发送失败: {result['message']}")
+
+        print()
+        print(f"✅ 完成! 已分析仓库: {repo_identifier}")
+        return 0
+    except Exception as error:
+        print(f"\n[错误] 单仓库模式执行失败: {error}")
+        traceback.print_exc()
+        return 1
+    finally:
+        db.close()
+
+
 def run_opportunity_report_command() -> int:
     """仅输出目标机会报表，不执行抓取与分析。"""
     print_banner()
@@ -305,8 +539,25 @@ def run_opportunity_report_command() -> int:
 
 def run_cli(args: List[str]) -> int:
     """CLI 路由分发。"""
-    if args and args[0] == "--fetch-only":
+    repo_identifier, repo_error = _extract_repo_argument(args)
+    if repo_error:
+        print(f"❌ 参数错误: {repo_error}")
+        print("   用法: uv run main.py --repo owner/repo")
+        print("   或:  uv run main.py --repo https://github.com/owner/repo")
+        return 2
+
+    has_fetch_only = "--fetch-only" in args
+    has_opportunity_report = "--opportunity-report" in args
+
+    if repo_identifier and (has_fetch_only or has_opportunity_report):
+        print("❌ 参数冲突: --repo 不能与 --fetch-only 或 --opportunity-report 同时使用")
+        return 2
+
+    if repo_identifier:
+        return run_single_repo_command(repo_identifier)
+
+    if has_fetch_only:
         return run_fetch_only_command()
-    if args and args[0] == "--opportunity-report":
+    if has_opportunity_report:
         return run_opportunity_report_command()
     return run_daily_command()

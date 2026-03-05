@@ -107,9 +107,15 @@ SURGE_THRESHOLD = _get_env_float("SURGE_THRESHOLD", 0.3)  # 30% 暴涨阈值
 # ============================================================================
 # 采集配置
 # ============================================================================
-TOP_N_DETAILS = 50  # AI 分析数量
+TOP_N_DETAILS = _get_env_positive_int("TOP_N_DETAILS", 50)  # AI 分析数量上限
 FETCH_REQUEST_DELAY = 0.5  # API 请求间隔（秒）
 GITHUB_CACHE_MINUTES = _get_env_positive_int("GITHUB_CACHE_MINUTES", 30)
+GITHUB_ACTIVITY_WINDOW_DAYS = _get_env_positive_int("GITHUB_ACTIVITY_WINDOW_DAYS", 30)
+GITHUB_ACTIVITY_ISSUES_LIMIT = _get_env_positive_int("GITHUB_ACTIVITY_ISSUES_LIMIT", 6)
+GITHUB_ACTIVITY_PRS_LIMIT = _get_env_positive_int("GITHUB_ACTIVITY_PRS_LIMIT", 6)
+GITHUB_ACTIVITY_DETAIL_ISSUES_LIMIT = _get_env_positive_int("GITHUB_ACTIVITY_DETAIL_ISSUES_LIMIT", 2)
+GITHUB_ACTIVITY_DETAIL_PRS_LIMIT = _get_env_positive_int("GITHUB_ACTIVITY_DETAIL_PRS_LIMIT", 2)
+GITHUB_ACTIVITY_DETAIL_LAST_COMMENTS = _get_env_positive_int("GITHUB_ACTIVITY_DETAIL_LAST_COMMENTS", 4)
 
 # 关键词检索 + 自定义分析 Prompt（通过配置文件设置）
 ANALYSIS_KEYWORDS = _get_env_list("ANALYSIS_KEYWORDS")
@@ -128,6 +134,7 @@ if PUSH_MIN_COMMERCIAL_LEVEL not in {"strong", "weak"}:
 # ============================================================================
 MODEL_MAX_CONCURRENCY = _get_env_positive_int("MODEL_MAX_CONCURRENCY", 4)
 MODEL_MAX_RPM = _get_env_positive_int("MODEL_MAX_RPM", 80)
+LLM_JSON_REPAIR_RETRIES = _get_env_positive_int("LLM_JSON_REPAIR_RETRIES", 1, minimum=0)
 
 # ============================================================================
 # 全链路 429 重试配置

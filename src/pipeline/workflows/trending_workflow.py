@@ -49,6 +49,10 @@ class TrendingWorkflow:
         """保存抓取快照。"""
         self.db.save_today_data(date, repos)
 
+    def fetch_single_repository(self, repo_identifier: str) -> Optional[RepoData]:
+        """获取单仓库数据（owner/repo）。"""
+        return self.fetcher.fetch_single_repository(repo_identifier, rank=1)
+
     def select_analysis_targets(
         self,
         repos: List[RepoData],

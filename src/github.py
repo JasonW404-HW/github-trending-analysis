@@ -479,6 +479,25 @@ class GitHubFetcher:
             print(f"   ⚠️ 获取仓库详情失败 {owner}/{repo}: {e}")
             return None
 
+    def fetch_single_repository(self, repo_identifier: str, rank: int = 1) -> Optional[Dict]:
+        """获取并标准化单仓库数据（兼容 pipeline RepoData 结构）。"""
+        normalized = (repo_identifier or "").strip()
+        if not normalized or "/" not in normalized:
+            return None
+
+        owner, repo = normalized.split("/", 1)
+        owner = owner.strip()
+        repo = repo.strip()
+        if not owner or not repo:
+            return None
+
+        print(f"📡 正在获取目标仓库 '{owner}/{repo}' ...")
+        detail = self.fetch_repo_details(owner, repo)
+        if not detail:
+            return None
+
+        return self._parse_repo_item(detail, rank=rank)
+
     def _build_request_key(self, sort_by: str, limit: int) -> str:
         """构建抓取状态缓存键"""
         return (
