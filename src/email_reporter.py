@@ -4,7 +4,23 @@ Email Reporter - 生成 HTML 邮件报告
 """
 
 from html import escape
-from typing import Dict, List, Optional
+import importlib
+from typing import Callable, Dict, List, Optional
+
+
+def _load_premailer_transform() -> Optional[Callable[..., object]]:
+    """延迟加载 premailer.transform，缺失依赖时安全回退。"""
+    try:
+        module = importlib.import_module("premailer")
+        transform = getattr(module, "transform", None)
+        if callable(transform):
+            return transform
+    except Exception:
+        return None
+    return None
+
+
+PREMAILER_TRANSFORM = _load_premailer_transform()
 
 from src.config import PUSH_MIN_COMMERCIAL_LEVEL, TOPIC, format_number, get_theme
 
@@ -33,7 +49,28 @@ class EmailReporter:
         html_parts.append(self._render_compact_trends(trends=trends))
         html_parts.append(self._get_footer(date=date))
 
-        return "\n".join(html_parts)
+        raw_html = "\n".join(html_parts)
+        return self._inline_css_for_email(raw_html)
+
+    @staticmethod
+    def _inline_css_for_email(html: str) -> str:
+        """将 <style> 规则内联到元素 style 属性，提升转发场景兼容性。"""
+        if not html or PREMAILER_TRANSFORM is None:
+            return html
+
+        try:
+            result = PREMAILER_TRANSFORM(
+                html,
+                keep_style_tags=False,
+                remove_classes=False,
+                strip_important=False,
+              disable_validation=True,
+              cssutils_logging_level="ERROR",
+            )
+            return str(result)
+        except Exception as error:
+            print(f"⚠️ 邮件 CSS 内联失败，回退原始 HTML: {error}")
+            return html
 
     @staticmethod
     def _as_list(value: object) -> List[str]:

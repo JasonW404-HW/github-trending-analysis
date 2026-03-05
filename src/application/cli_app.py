@@ -63,7 +63,7 @@ def check_environment() -> bool:
     if not RESEND_API_KEY:
         errors.append("RESEND_API_KEY 环境变量未设置 (请提供 Resend API Key)")
     if not EMAIL_TO:
-        errors.append("EMAIL_TO 环境变量未设置 (请提供收件人邮箱)")
+        errors.append("EMAIL_TO 环境变量未设置 (请提供收件人邮箱，多个可用逗号分隔)")
 
     if errors:
         print("❌ 环境变量配置错误:")

@@ -3,7 +3,7 @@ Resend Sender - Resend 邮件发送
 使用 Resend API 发送 HTML 邮件
 """
 import resend
-from typing import Dict, Optional
+from typing import Any, Dict
 
 from src.retry_utils import execute_with_429_retry
 
@@ -21,9 +21,32 @@ class ResendSender:
         self.api_key = api_key
         resend.api_key = api_key
 
+    @staticmethod
+    def _normalize_recipients(to: str | list[str]) -> list[str]:
+        """标准化收件人列表，支持逗号分隔字符串或字符串列表。"""
+        raw_items: list[str] = []
+
+        if isinstance(to, str):
+            raw_items = to.replace(";", ",").split(",")
+        elif isinstance(to, list):
+            for item in to:
+                if not isinstance(item, str):
+                    continue
+                raw_items.extend(item.replace(";", ",").split(","))
+        else:
+            return []
+
+        recipients: list[str] = []
+        for item in raw_items:
+            email = item.strip()
+            if email and email not in recipients:
+                recipients.append(email)
+
+        return recipients
+
     def send_email(
         self,
-        to: str,
+        to: str | list[str],
         subject: str,
         html_content: str,
         from_email: str = "onboarding@resend.dev"
@@ -32,7 +55,7 @@ class ResendSender:
         发送邮件
 
         Args:
-            to: 收件人邮箱
+            to: 收件人邮箱（支持单个邮箱、逗号分隔字符串或字符串列表）
             subject: 邮件标题
             html_content: HTML 内容
             from_email: 发件人邮箱
@@ -40,22 +63,24 @@ class ResendSender:
         Returns:
             {"success": bool, "message": str, "id": str}
         """
-        if not to:
+        recipients = self._normalize_recipients(to)
+        if not recipients:
             return {"success": False, "message": "收件人邮箱为空"}
 
         try:
-            print(f"📧 正在发送邮件到: {to}")
+            recipients_text = ", ".join(recipients)
+            print(f"📧 正在发送邮件到: {recipients_text}")
 
-            params = {
+            params: Any = {
                 "from": from_email,
-                "to": [to],
+                "to": recipients,
                 "subject": subject,
                 "html": html_content,
             }
 
             response = execute_with_429_retry(
                 lambda: resend.Emails.send(params),
-                context=f"Resend 发送邮件 {to}",
+                context=f"Resend 发送邮件 {recipients_text}",
             )
 
             print(f"✅ 邮件发送成功! ID: {response.get('id')}")
@@ -79,7 +104,7 @@ class ResendSender:
 
     def send_with_text(
         self,
-        to: str,
+        to: str | list[str],
         subject: str,
         html_content: str,
         text_content: str = "",
@@ -89,7 +114,7 @@ class ResendSender:
         发送带纯文本备用的邮件
 
         Args:
-            to: 收件人邮箱
+            to: 收件人邮箱（支持单个邮箱、逗号分隔字符串或字符串列表）
             subject: 邮件标题
             html_content: HTML 内容
             text_content: 纯文本内容（备用）
@@ -98,15 +123,17 @@ class ResendSender:
         Returns:
             {"success": bool, "message": str, "id": str}
         """
-        if not to:
+        recipients = self._normalize_recipients(to)
+        if not recipients:
             return {"success": False, "message": "收件人邮箱为空"}
 
         try:
-            print(f"📧 正在发送邮件到: {to}")
+            recipients_text = ", ".join(recipients)
+            print(f"📧 正在发送邮件到: {recipients_text}")
 
-            params = {
+            params: Any = {
                 "from": from_email,
-                "to": [to],
+                "to": recipients,
                 "subject": subject,
                 "html": html_content,
             }
@@ -116,7 +143,7 @@ class ResendSender:
 
             response = execute_with_429_retry(
                 lambda: resend.Emails.send(params),
-                context=f"Resend 发送邮件 {to}",
+                context=f"Resend 发送邮件 {recipients_text}",
             )
 
             print(f"✅ 邮件发送成功! ID: {response.get('id')}")
@@ -141,7 +168,7 @@ class ResendSender:
 
 def send_email(
     api_key: str,
-    to: str,
+    to: str | list[str],
     subject: str,
     html_content: str,
     from_email: str = "onboarding@resend.dev"

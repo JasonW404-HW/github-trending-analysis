@@ -92,7 +92,13 @@ cp .env.example .env
 - `GH_TOKEN`
 - `ZHIPU_API_KEY`
 - `RESEND_API_KEY`
-- `EMAIL_TO`
+- `EMAIL_TO`（支持多个收件人，英文逗号分隔）
+
+示例：
+
+```dotenv
+EMAIL_TO=alice@example.com,bob@example.com
+```
 
 ---
 
@@ -127,7 +133,7 @@ uv run main.py --opportunity-report
 | `TOPIC`                                | 否   | 追踪话题（默认 `claude-code`）  |
 | `ZHIPU_API_KEY`                        | 是   | 模型 API Key                    |
 | `RESEND_API_KEY`                       | 是   | Resend API Key                  |
-| `EMAIL_TO`                             | 是   | 收件人邮箱                      |
+| `EMAIL_TO`                             | 是   | 收件人邮箱（多个用逗号分隔）    |
 | `TOP_N_DETAILS`                        | 否   | AI 分析项目上限（debug 可设 2） |
 | `LLM_JSON_REPAIR_RETRIES`              | 否   | JSON 解析失败后修复重试次数     |
 | `ANALYSIS_KEYWORDS`                    | 否   | 关键词筛选（逗号分隔）          |

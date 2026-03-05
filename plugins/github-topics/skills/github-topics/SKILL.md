@@ -38,7 +38,7 @@ uv run main.py --opportunity-report
 | `TOPIC` | 要追踪的 GitHub Topic (默认: claude-code) | 否 |
 | `ZHIPU_API_KEY` | Claude API Key (智谱代理) | 是 |
 | `RESEND_API_KEY` | Resend 邮件服务 API Key | 是 |
-| `EMAIL_TO` | 收件人邮箱 | 是 |
+| `EMAIL_TO` | 收件人邮箱（多个用逗号分隔） | 是 |
 | `RESEND_FROM_EMAIL` | 发件人邮箱 | 否 |
 | `DB_PATH` | 数据库路径 (默认: data/github-trending.db) | 否 |
 | `DB_RETENTION_DAYS` | 数据保留天数 (默认: 90) | 否 |
