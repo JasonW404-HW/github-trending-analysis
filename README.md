@@ -123,6 +123,57 @@ uv run main.py --fetch-only
 uv run main.py --opportunity-report
 ```
 
+### Ubuntu 定时运行（每天 09:00）
+
+#### 方案 A：`systemd --user timer`（桌面/有用户会话）
+
+```bash
+chmod +x scripts/setup_ubuntu_timer.sh
+
+# 安装定时任务（本地时区每天 09:00）
+scripts/setup_ubuntu_timer.sh --run-at 09:00
+
+# 查看下一次触发时间
+systemctl --user list-timers github-topics-trending.timer --no-pager
+
+# 手动立即执行一次（用于联调）
+systemctl --user start github-topics-trending.service
+
+# 查看执行日志
+journalctl --user -u github-topics-trending.service -n 200 --no-pager
+```
+
+如果希望用户退出登录后依然触发定时任务：
+
+```bash
+sudo loginctl enable-linger $USER
+```
+
+移除定时任务：
+
+```bash
+scripts/setup_ubuntu_timer.sh --uninstall
+```
+
+#### 方案 B：`cron`（Ubuntu 服务器/无 user bus 场景）
+
+当执行 `systemctl --user` 报错 `Failed to connect to bus` 时，使用该方案：
+
+```bash
+chmod +x scripts/setup_ubuntu_cron.sh
+
+# 安装 cron（本地时区每天 09:00）
+scripts/setup_ubuntu_cron.sh --run-at 09:00
+
+# 查看当前托管的 cron 任务
+scripts/setup_ubuntu_cron.sh --status
+
+# 移除任务
+scripts/setup_ubuntu_cron.sh --uninstall
+```
+
+默认日志输出到 `data/logs/scheduler.log`。
+
 ---
 
 ## 关键配置
