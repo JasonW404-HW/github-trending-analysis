@@ -5,6 +5,8 @@ Resend Sender - Resend 邮件发送
 import resend
 from typing import Dict, Optional
 
+from src.retry_utils import execute_with_429_retry
+
 
 class ResendSender:
     """Resend 邮件发送"""
@@ -51,7 +53,10 @@ class ResendSender:
                 "html": html_content,
             }
 
-            response = resend.Emails.send(params)
+            response = execute_with_429_retry(
+                lambda: resend.Emails.send(params),
+                context=f"Resend 发送邮件 {to}",
+            )
 
             print(f"✅ 邮件发送成功! ID: {response.get('id')}")
 
@@ -109,7 +114,10 @@ class ResendSender:
             if text_content:
                 params["text"] = text_content
 
-            response = resend.Emails.send(params)
+            response = execute_with_429_retry(
+                lambda: resend.Emails.send(params),
+                context=f"Resend 发送邮件 {to}",
+            )
 
             print(f"✅ 邮件发送成功! ID: {response.get('id')}")
 

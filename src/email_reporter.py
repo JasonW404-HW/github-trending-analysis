@@ -3,7 +3,7 @@ Email Reporter - 生成 HTML 邮件报告
 GitHub Topics Trending 专业邮件排版
 """
 from typing import Dict, List
-from src.config import TOPIC, get_theme, format_number
+from src.config import TOPIC, PUSH_MIN_COMMERCIAL_LEVEL, get_theme, format_number
 
 
 class EmailReporter:
@@ -35,8 +35,9 @@ class EmailReporter:
         # HTML 头部
         html_parts.append(self._get_header(date))
 
-        # Top 20 榜单
-        html_parts.append(self._render_top_20(trends.get("top_20", [])))
+        # 高潜商业价值项目（仅推送目标项目）
+        opportunities = self._filter_push_candidates(trends.get("top_20", []))
+        html_parts.append(self._render_target_opportunities(opportunities))
 
         # 星标增长 Top 5
         rising = trends.get("rising_top5", [])
@@ -54,7 +55,7 @@ class EmailReporter:
             html_parts.append(self._render_active(active))
 
         # 统计信息
-        html_parts.append(self._render_stats(trends))
+        html_parts.append(self._render_stats(trends, opportunities))
 
         # HTML 尾部
         html_parts.append(self._get_footer(date))
@@ -305,6 +306,85 @@ class EmailReporter:
 
         return self._section_html("Top 20 经典榜单", "\n".join(cards))
 
+    def _filter_push_candidates(self, repos: List[Dict]) -> List[Dict]:
+        """根据商业价值等级过滤邮件候选项目"""
+        if not repos:
+            return []
+
+        allowed_levels = {"strong"}
+        if PUSH_MIN_COMMERCIAL_LEVEL == "weak":
+            allowed_levels = {"strong", "weak"}
+
+        candidates: List[Dict] = []
+        for repo in repos:
+            assessment = repo.get("purpose_assessment", {}) or {}
+            level = str(assessment.get("commercial_value_level", "none")).lower()
+            recommended = bool(assessment.get("recommended_for_push", False))
+            if recommended and level in allowed_levels:
+                candidates.append(repo)
+
+        return candidates
+
+    def _render_target_opportunities(self, repos: List[Dict]) -> str:
+        """渲染目标导向机会清单"""
+        if not repos:
+            return self._section_html(
+                "目标机会项目",
+                '<p style="text-align:center;color:#9ca3af;padding:24px;">未发现满足当前商业价值阈值的项目</p>',
+            )
+
+        rows: List[str] = []
+        for repo in repos[:20]:
+            rows.append(self._format_target_row(repo))
+
+        table_html = f"""
+        <table style="width:100%;border-collapse:collapse;background:{self.theme['bg']};border-radius:8px;overflow:hidden;">
+            <thead>
+                <tr style="background:{self.theme['border']};text-align:left;">
+                    <th style="padding:10px 12px;font-size:12px;">项目</th>
+                    <th style="padding:10px 12px;font-size:12px;">领域/门槛</th>
+                    <th style="padding:10px 12px;font-size:12px;">成熟度</th>
+                    <th style="padding:10px 12px;font-size:12px;">商业价值</th>
+                    <th style="padding:10px 12px;font-size:12px;">关键机会</th>
+                </tr>
+            </thead>
+            <tbody>
+                {''.join(rows)}
+            </tbody>
+        </table>
+        """
+
+        return self._section_html("目标机会项目", table_html)
+
+    def _format_target_row(self, repo: Dict) -> str:
+        """格式化目标机会项目行"""
+        repo_name = repo.get("repo_name", "")
+        url = repo.get("url", f"https://github.com/{repo_name}")
+        assessment = repo.get("purpose_assessment", {}) or {}
+
+        domain = assessment.get("domain", "-")
+        barrier_level = assessment.get("domain_barrier_level", "-")
+        maturity = assessment.get("maturity_level", "-")
+        commercial_level = assessment.get("commercial_value_level", "none")
+        opportunities = assessment.get("infra_transformation_opportunities", []) or []
+        opportunity_text = "；".join(opportunities[:2]) if opportunities else "-"
+
+        return f"""
+        <tr style="border-top:1px solid {self.theme['border']};vertical-align:top;">
+            <td style="padding:10px 12px;">
+                <a href="{url}" style="color:{self.theme['text']};text-decoration:none;font-weight:600;">{repo_name}</a>
+                <div style="margin-top:4px;color:{self.theme['text_secondary']};font-size:12px;">{repo.get('summary', '')}</div>
+            </td>
+            <td style="padding:10px 12px;font-size:12px;">
+                <div>{domain}</div>
+                <div style="color:{self.theme['text_secondary']};margin-top:4px;">门槛: {barrier_level}</div>
+            </td>
+            <td style="padding:10px 12px;font-size:12px;">{maturity}</td>
+            <td style="padding:10px 12px;font-size:12px;">{commercial_level}</td>
+            <td style="padding:10px 12px;font-size:12px;color:{self.theme['text_secondary']};">{opportunity_text}</td>
+        </tr>
+        """
+
     def _render_rising_top5(self, repos: List[Dict]) -> str:
         """渲染星标增长 Top 5"""
         cards = []
@@ -335,12 +415,13 @@ class EmailReporter:
 
         return self._section_html("活跃项目", "\n".join(cards))
 
-    def _render_stats(self, trends: Dict) -> str:
+    def _render_stats(self, trends: Dict, opportunities: List[Dict]) -> str:
         """渲染统计信息"""
         new_count = len(trends.get("new_entries", []))
         rising_count = len(trends.get("rising_top5", []))
         surging_count = len(trends.get("surging", []))
         active_count = len(trends.get("active", []))
+        opportunity_count = len(opportunities)
 
         return self._section_html("趋势概览", f"""
         <div class="stats-grid">
@@ -356,6 +437,9 @@ class EmailReporter:
                 <div class="stat-value">{active_count}</div>
                 <div class="stat-label">活跃项目</div>
             </div>
+        </div>
+        <div style="margin-top:12px;color:{self.theme['text_secondary']};font-size:12px;">
+            商业机会候选（阈值 {PUSH_MIN_COMMERCIAL_LEVEL}）: <strong style="color:{self.theme['text']};">{opportunity_count}</strong>
         </div>
         """)
 
@@ -393,6 +477,11 @@ class EmailReporter:
             solves_tags = [f'<span class="solve-tag">{s}</span>' for s in repo.get("solves", [])[:4]]
             solves_html = f'<div class="solves-list">{"".join(solves_tags)}</div>'
 
+        tags_html = ""
+        if show_details and repo.get("tags"):
+            tag_items = [f'<span class="solve-tag">#{tag}</span>' for tag in repo.get("tags", [])[:4]]
+            tags_html = f'<div class="solves-list" style="margin-top:6px;">{"".join(tag_items)}</div>'
+
         # 详细信息
         details_html = ""
         if show_details:
@@ -422,6 +511,7 @@ class EmailReporter:
                     {category_badge}
                     {language_badge}
                     {solves_html}
+                    {tags_html}
                 </div>
             </div>
         </div>"""

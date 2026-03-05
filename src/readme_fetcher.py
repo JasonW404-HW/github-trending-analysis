@@ -8,6 +8,7 @@ import requests
 from typing import Dict, List, Optional
 
 from src.config import GITHUB_TOKEN, GITHUB_API_BASE, FETCH_REQUEST_DELAY
+from src.retry_utils import execute_with_429_retry
 
 
 class ReadmeFetcher:
@@ -49,12 +50,20 @@ class ReadmeFetcher:
         """
         url = f"{self.api_base}/repos/{owner}/{repo}/readme"
 
-        if html:
-            self.session.headers["Accept"] = "application/vnd.github.html"
-
         try:
-            response = self.session.get(url, timeout=30)
+            headers = None
+            if html:
+                headers = {"Accept": "application/vnd.github.html"}
+
+            response = self._request_with_retry(
+                url=url,
+                headers=headers,
+                context=f"GitHub README {owner}/{repo}",
+            )
             response.raise_for_status()
+
+            if html:
+                return response.text
 
             # GitHub 返回的是 base64 编码的内容
             data = response.json()
@@ -69,6 +78,26 @@ class ReadmeFetcher:
         except requests.RequestException as e:
             print(f"   ⚠️ 获取 README 失败 {owner}/{repo}: {e}")
             return None
+
+    def _request_with_retry(
+        self,
+        url: str,
+        headers: Optional[Dict[str, str]] = None,
+        timeout: int = 30,
+        context: str = "GitHub README API",
+    ) -> requests.Response:
+        """执行 GitHub README 请求并对 429 进行自动冷却重试"""
+
+        def operation() -> requests.Response:
+            response = self.session.get(url, headers=headers, timeout=timeout)
+            if response.status_code == 429:
+                raise requests.HTTPError(
+                    f"429 Too Many Requests: {response.text}",
+                    response=response,
+                )
+            return response
+
+        return execute_with_429_retry(operation, context=context)
 
     def fetch_readme_summary(self, owner: str, repo: str, max_length: int = 500) -> Optional[str]:
         """
@@ -191,7 +220,19 @@ class ReadmeFetcher:
             url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{name}"
 
             try:
-                response = requests.get(url, timeout=10)
+                def raw_operation() -> requests.Response:
+                    raw_response = requests.get(url, timeout=10)
+                    if raw_response.status_code == 429:
+                        raise requests.HTTPError(
+                            f"429 Too Many Requests: {raw_response.text}",
+                            response=raw_response,
+                        )
+                    return raw_response
+
+                response = execute_with_429_retry(
+                    raw_operation,
+                    context=f"GitHub Raw README {owner}/{repo}",
+                )
                 if response.status_code == 200:
                     return response.text
             except requests.RequestException:

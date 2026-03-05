@@ -2,6 +2,7 @@
 配置模块 - GitHub Topics Trending 配置管理
 """
 import os
+from typing import Optional
 from dotenv import load_dotenv
 
 # 加载 .env 文件
@@ -41,7 +42,24 @@ def _get_env_int(key: str, default: int) -> int:
     value = os.getenv(key)
     if value is None or value == "":
         return default
-    return int(value)
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+def _get_env_positive_int(key: str, default: int, minimum: int = 1) -> int:
+    """获取正整数环境变量，处理空字符串和非法值"""
+    value = _get_env_int(key, default)
+    return max(minimum, value)
+
+
+def _get_env_list(key: str) -> list[str]:
+    """获取逗号分隔的字符串列表环境变量"""
+    value = os.getenv(key, "")
+    if not value:
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
 
 
 SMTP_HOST = os.getenv("SMTP_HOST")
@@ -91,6 +109,31 @@ SURGE_THRESHOLD = _get_env_float("SURGE_THRESHOLD", 0.3)  # 30% 暴涨阈值
 # ============================================================================
 TOP_N_DETAILS = 50  # AI 分析数量
 FETCH_REQUEST_DELAY = 0.5  # API 请求间隔（秒）
+GITHUB_CACHE_MINUTES = _get_env_positive_int("GITHUB_CACHE_MINUTES", 30)
+
+# 关键词检索 + 自定义分析 Prompt（通过配置文件设置）
+ANALYSIS_KEYWORDS = _get_env_list("ANALYSIS_KEYWORDS")
+ANALYSIS_CUSTOM_PROMPT = (os.getenv("ANALYSIS_CUSTOM_PROMPT") or "").strip()
+ANALYSIS_KEYWORD_MATCH_MODE = (os.getenv("ANALYSIS_KEYWORD_MATCH_MODE") or "any").strip().lower()
+if ANALYSIS_KEYWORD_MATCH_MODE not in {"any", "all"}:
+    ANALYSIS_KEYWORD_MATCH_MODE = "any"
+
+# 邮件推送商业价值阈值：strong（仅强商业价值）或 weak（包含较弱商业价值）
+PUSH_MIN_COMMERCIAL_LEVEL = (os.getenv("PUSH_MIN_COMMERCIAL_LEVEL") or "strong").strip().lower()
+if PUSH_MIN_COMMERCIAL_LEVEL not in {"strong", "weak"}:
+    PUSH_MIN_COMMERCIAL_LEVEL = "strong"
+
+# ============================================================================
+# 模型请求限流配置
+# ============================================================================
+MODEL_MAX_CONCURRENCY = _get_env_positive_int("MODEL_MAX_CONCURRENCY", 4)
+MODEL_MAX_RPM = _get_env_positive_int("MODEL_MAX_RPM", 80)
+
+# ============================================================================
+# 全链路 429 重试配置
+# ============================================================================
+HTTP_429_COOLDOWN_SECONDS = _get_env_positive_int("HTTP_429_COOLDOWN_SECONDS", 60)
+HTTP_429_MAX_RETRIES = _get_env_positive_int("HTTP_429_MAX_RETRIES", 3, minimum=0)
 
 # ============================================================================
 # 仓库分类定义
@@ -211,7 +254,7 @@ THEMES = {
 DEFAULT_THEME = "blue"
 
 
-def get_theme(theme_name: str = None) -> dict:
+def get_theme(theme_name: Optional[str] = None) -> dict:
     """获取指定主题配置"""
     theme_name = theme_name or DEFAULT_THEME
     return THEMES.get(theme_name, THEMES[DEFAULT_THEME])

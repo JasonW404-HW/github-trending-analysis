@@ -42,9 +42,9 @@ ENV/
 htmlcov/
 
 # 项目特定
-docs/*.html
-docs/css/
-docs/.index.json
+# 程序运行产物（不纳入版本管理）
+data/
+docs/
 
 # RSS 缓存
 *.xml

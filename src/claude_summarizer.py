@@ -2,16 +2,29 @@
 Claude Summarizer - AI 总结和分类 GitHub 仓库
 使用 Claude API 对仓库进行分析、总结和分类
 """
+
 import json
-from typing import Dict, List, Optional
+import threading
+import time
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Callable, Deque, Dict, List, Optional
+
 from anthropic import Anthropic
 
 from src.config import (
-    ZHIPU_API_KEY, ANTHROPIC_BASE_URL, CLAUDE_MODEL, CLAUDE_MAX_TOKENS, CATEGORIES
+    ANALYSIS_CUSTOM_PROMPT,
+    ANTHROPIC_BASE_URL,
+    CATEGORIES,
+    CLAUDE_MAX_TOKENS,
+    CLAUDE_MODEL,
+    MODEL_MAX_CONCURRENCY,
+    MODEL_MAX_RPM,
+    ZHIPU_API_KEY,
 )
+from src.retry_utils import execute_with_429_retry
 
 
-# 分类定义 - 从 CATEGORIES 配置中获取
 def get_category_list() -> Dict[str, str]:
     """获取分类列表"""
     return {key: info["name"] for key, info in CATEGORIES.items()}
@@ -20,321 +33,501 @@ def get_category_list() -> Dict[str, str]:
 REPO_CATEGORIES = get_category_list()
 
 
+class _RpmLimiter:
+    """简单 RPM 限流器（滑动窗口）"""
+
+    def __init__(self, max_rpm: int):
+        self.max_rpm = max(1, max_rpm)
+        self._timestamps: Deque[float] = deque()
+        self._lock = threading.Lock()
+
+    def acquire(self) -> None:
+        """阻塞直到可发起下一次请求"""
+        while True:
+            wait_seconds = 0.0
+            with self._lock:
+                now = time.monotonic()
+
+                while self._timestamps and (now - self._timestamps[0]) >= 60:
+                    self._timestamps.popleft()
+
+                if len(self._timestamps) < self.max_rpm:
+                    self._timestamps.append(now)
+                    return
+
+                wait_seconds = max(0.05, 60 - (now - self._timestamps[0]))
+
+            time.sleep(wait_seconds)
+
+
 class ClaudeSummarizer:
     """AI 总结和分类 GitHub 仓库"""
 
-    def __init__(self, api_key: str = None, base_url: str = None):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        max_concurrency: Optional[int] = None,
+        max_rpm: Optional[int] = None,
+        extra_prompt: Optional[str] = None,
+    ):
         """
-        初始化 Claude 客户端
+        初始化 Claude 客户端配置
 
         Args:
             api_key: API 密钥，默认从环境变量读取
             base_url: API 基础 URL，默认从环境变量读取
+            max_concurrency: 最大并发请求数
+            max_rpm: 每分钟最大请求数
+            extra_prompt: 自定义分析提示词（来自配置）
         """
         self.api_key = api_key or ZHIPU_API_KEY
         self.base_url = base_url or ANTHROPIC_BASE_URL
         self.model = CLAUDE_MODEL
         self.max_tokens = CLAUDE_MAX_TOKENS
+        self.max_concurrency = max(1, max_concurrency or MODEL_MAX_CONCURRENCY)
+        self.max_rpm = max(1, max_rpm or MODEL_MAX_RPM)
+        self.extra_prompt = (extra_prompt if extra_prompt is not None else ANALYSIS_CUSTOM_PROMPT).strip()
+        self._rpm_limiter = _RpmLimiter(self.max_rpm)
 
         if not self.api_key:
             raise ValueError("ZHIPU_API_KEY 环境变量未设置")
 
         try:
-            self.client = Anthropic(
-                base_url=self.base_url,
-                api_key=self.api_key
-            )
-            print(f"✅ Claude 客户端初始化成功")
-        except Exception as e:
-            raise Exception(f"Claude 客户端初始化失败: {e}")
+            self._create_client()
+            print("✅ Claude 客户端初始化成功")
+        except Exception as error:
+            raise Exception(f"Claude 客户端初始化失败: {error}")
 
-    def summarize_and_classify(self, repos: List[Dict]) -> List[Dict]:
+    def _create_client(self) -> Anthropic:
+        """创建 Anthropic 客户端"""
+        return Anthropic(base_url=self.base_url, api_key=self.api_key)
+
+    def summarize_and_classify(
+        self,
+        repos: List[Dict],
+        on_success: Optional[Callable[[Dict], None]] = None,
+    ) -> List[Dict]:
         """
-        批量总结和分类仓库
+        单仓库并发分析（支持并发与 RPM 限流）
 
         Args:
-            repos: 仓库列表
-                [
-                    {
-                        "repo_name": "owner/repo",
-                        "owner": "owner",
-                        "name": "repo",
-                        "description": "...",
-                        "language": "Python",
-                        "topics": ["topic1", "topic2"],
-                        "url": "...",
-                        "readme_summary": "..."
-                    },
-                    ...
-                ]
+            repos: 待分析仓库列表
+            on_success: 每次成功分析后的回调（用于及时落库）
 
         Returns:
-            [
-                {
-                    "repo_name": "owner/repo",
-                    "summary": "一句话摘要",
-                    "description": "详细描述",
-                    "use_case": "使用场景",
-                    "solves": ["问题1", "问题2"],
-                    "category": "tool",
-                    "category_zh": "工具",
-                    "language": "Python",
-                    "topics": ["topic1"],
-                    "owner": "owner",
-                    "url": "..."
-                },
-                ...
-            ]
+            分析结果列表（失败项会使用降级结果）
         """
         if not repos:
             return []
 
-        print(f"🤖 正在调用 Claude 分析 {len(repos)} 个仓库...")
+        print(
+            f"🤖 正在分析 {len(repos)} 个仓库 "
+            f"(并发={self.max_concurrency}, RPM={self.max_rpm})..."
+        )
 
-        # 构建批量分析 Prompt
-        prompt = self._build_batch_prompt(repos)
+        result_map: Dict[str, Dict] = {}
+
+        with ThreadPoolExecutor(max_workers=self.max_concurrency) as executor:
+            future_map = {
+                executor.submit(self._analyze_single_repo, repo): repo
+                for repo in repos
+            }
+
+            for future in as_completed(future_map):
+                repo = future_map[future]
+                repo_name = repo.get("repo_name") or repo.get("name", "unknown")
+
+                try:
+                    result = future.result()
+                except Exception as error:
+                    print(f"❌ 分析异常 {repo_name}: {error}")
+                    result = None
+
+                if result:
+                    result_map[repo_name] = result
+                    if on_success:
+                        on_success(result)
+                    continue
+
+                result_map[repo_name] = self._fallback_summary(repo)
+
+        ordered_results: List[Dict] = []
+        for repo in repos:
+            repo_name = repo.get("repo_name") or repo.get("name", "unknown")
+            if repo_name in result_map:
+                ordered_results.append(result_map[repo_name])
+
+        success_count = len([result for result in ordered_results if not result.get("fallback")])
+        fallback_count = len(ordered_results) - success_count
+        print(f"✅ AI 分析完成: 成功 {success_count}，降级 {fallback_count}")
+
+        return ordered_results
+
+    def _analyze_single_repo(self, repo: Dict) -> Optional[Dict]:
+        """分析单个仓库"""
+        repo_name = repo.get("repo_name") or repo.get("name", "unknown")
+        prompt = self._build_single_prompt(repo)
+
+        self._rpm_limiter.acquire()
 
         try:
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=self.max_tokens,
-                temperature=0.3,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ]
+            response = execute_with_429_retry(
+                operation=lambda: self._create_client().messages.create(
+                    model=self.model,
+                    max_tokens=self.max_tokens,
+                    temperature=0.3,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": prompt,
+                        }
+                    ],
+                ),
+                context=f"Claude 分析 {repo_name}",
             )
 
-            result_text = response.content[0].text
-            print(f"✅ Claude 响应成功")
+            result_text = self._extract_response_text(response)
+            if not result_text:
+                return None
+            return self._parse_single_response(result_text, repo)
 
-            # 解析结果
-            results = self._parse_batch_response(result_text, repos)
+        except Exception as error:
+            print(f"❌ Claude API 调用失败 {repo_name}: {error}")
+            return None
 
-            return results
+    @staticmethod
+    def _extract_response_text(response: object) -> str:
+        """提取 Claude 响应中的文本内容"""
+        content_blocks = getattr(response, "content", [])
+        texts: List[str] = []
 
-        except Exception as e:
-            print(f"❌ Claude API 调用失败: {e}")
-            # 返回基本信息作为降级方案
-            return self._fallback_summaries(repos)
+        for block in content_blocks:
+            text = getattr(block, "text", None)
+            if isinstance(text, str) and text.strip():
+                texts.append(text)
 
-    def _build_batch_prompt(self, repos: List[Dict]) -> str:
-        """
-        构建批量分析的 Prompt
+        return "\n".join(texts).strip()
 
-        Args:
-            repos: 仓库列表
+    def _build_single_prompt(self, repo: Dict) -> str:
+        """构建单仓库分析 Prompt"""
+        repo_name = repo.get("repo_name")
+        description = repo.get("description", "N/A")
+        language = repo.get("language", "N/A")
+        topics = repo.get("topics", [])
+        readme = repo.get("readme_summary", "")
+        keyword_hits = repo.get("keyword_hits", [])
 
-        Returns:
-            Prompt 字符串
-        """
-        # 构建仓库列表
-        repos_text = ""
-        for i, repo in enumerate(repos[:20], 1):  # 一次最多分析 20 个
-            repos_text += f"\n{'='*60}\n"
-            repos_text += f"【仓库 {i}】\n"
-            repos_text += f"名称: {repo.get('repo_name')}\n"
-            repos_text += f"描述: {repo.get('description', 'N/A')}\n"
-            repos_text += f"语言: {repo.get('language', 'N/A')}\n"
+        category_text = "\n".join([f"  - {key}: {zh}" for key, zh in REPO_CATEGORIES.items()])
+        topic_text = ", ".join(topics[:8]) if topics else "N/A"
+        keyword_text = ", ".join(keyword_hits) if keyword_hits else "N/A"
+        extra_prompt_text = self.extra_prompt if self.extra_prompt else "无"
 
-            topics = repo.get("topics", [])
-            if topics:
-                repos_text += f"Topics: {', '.join(topics[:5])}\n"
+        return f"""你是一个开源项目分析专家。请分析这个 GitHub 仓库并输出结构化结果。
 
-            readme = repo.get("readme_summary", "")
-            if readme:
-                repos_text += f"\nREADME 摘要:\n{readme[:300]}\n"
+【仓库信息】
+名称: {repo_name}
+描述: {description}
+语言: {language}
+Topics: {topic_text}
+关键词命中: {keyword_text}
 
-        # 构建分类说明
-        category_text = "\n".join([
-            f"  - {key}: {zh}"
-            for key, zh in REPO_CATEGORIES.items()
-        ])
-
-        prompt = f"""你是一个开源项目分析专家。请分析以下 {min(len(repos), 20)} 个 GitHub 仓库，为每个仓库生成摘要和分类。
-
-{repos_text}
+README 摘要:
+{readme[:1000] if readme else 'N/A'}
 
 ---
 
 【任务要求】
 
-对每个仓库提取以下信息：
+请输出以下字段：
+1. summary: 一句话摘要（不超过30字）
+2. description: 详细描述（50-100字）
+3. use_case: 使用场景
+4. solves: 解决的问题列表（3-5个）
+5. category: 选择一个分类
+6. category_zh: 中文分类名
+7. tech_stack: 技术栈标签（可选）
+8. tags: 标签数组（3-8个，短词，便于浏览）
+9. purpose_assessment: 目的导向评估对象（见下方结构）
 
-1. **summary**: 一句话摘要（不超过30字）
-   - 简洁描述这个项目是什么
+【评估目标（必须重点完成）】
+- 判断该项目是否属于“使用模型服务，尤其基于 GPU 模型服务”的项目
+- 评估其所在领域、领域门槛（高/中/低）与门槛理由
+- 评估开发进展：已实现功能、当前问题、未来方向（作者 roadmap + 你推测的方向）
+- 评估商业价值：
+    - strong: 产品较成熟，且具备可私有化部署改造与差异化盈利机会（例如私有基建设备、NPU 替代 GPU 等）
+    - weak: 产品尚不成熟，但符合行业趋势且持续贡献，并具备一定改造与盈利空间
+    - none: 暂不具备明确商业价值
+- 给出是否推荐推送：仅 strong/weak 才可推荐，none 不推荐
 
-2. **description**: 详细描述（50-100字）
-   - 详细说明项目的功能和价值
+`purpose_assessment` 结构要求：
+{{
+    "is_model_service_project": true,
+    "model_service_focus": "GPU-centric|Hybrid|Not-clear",
+    "domain": "所属领域",
+    "domain_barrier_level": "high|medium|low",
+    "domain_barrier_reason": "门槛判断依据",
+    "maturity_level": "mature|growing|early",
+    "implemented_features": ["已实现功能1", "功能2"],
+    "current_issues": ["当前问题1", "问题2"],
+    "roadmap_signals": ["作者Roadmap线索或规划"],
+    "future_directions": ["模型推测未来方向"],
+    "private_deploy_fit": "high|medium|low",
+    "infra_transformation_opportunities": ["私有化/NPU替代等机会"],
+    "commercial_value_level": "strong|weak|none",
+    "commercial_value_reason": "商业价值判断依据",
+    "recommended_for_push": true
+}}
 
-3. **use_case**: 使用场景
-   - 谁在什么情况下会用到这个项目
+额外分析要求（来自配置，可为空）:
+{extra_prompt_text}
 
-4. **solves**: 解决的问题列表
-   - 3-5个关键词或短语
-   - 描述这个项目解决什么具体问题
-
-5. **category**: 选择一个分类
-   可选分类:
+可选分类:
 {category_text}
-
-6. **category_zh**: 中文分类名
-   - 对应 category 的中文名称
-
-7. **tech_stack**: 技术栈标签（可选）
-   - 主要使用的技术
 
 【输出格式】
 
-严格按照以下 JSON 数组格式输出，不要有任何其他文字说明：
+严格输出 JSON 对象，不要有任何额外说明：
 
 ```json
-[
-  {{
-    "repo_name": "owner/repo",
-    "summary": "一句话摘要",
-    "description": "详细描述",
-    "use_case": "使用场景",
-    "solves": ["问题1", "问题2", "问题3"],
-    "category": "tool",
-    "category_zh": "工具",
-    "tech_stack": ["React", "TypeScript"]
+{{
+  "repo_name": "{repo_name}",
+  "summary": "一句话摘要",
+  "description": "详细描述",
+  "use_case": "使用场景",
+  "solves": ["问题1", "问题2", "问题3"],
+  "category": "tool",
+  "category_zh": "工具",
+  "tech_stack": ["Python"],
+  "tags": ["自动化", "代码生成", "命令行"],
+  "purpose_assessment": {{
+    "is_model_service_project": true,
+    "model_service_focus": "GPU-centric",
+    "domain": "AI基础设施",
+    "domain_barrier_level": "high",
+    "domain_barrier_reason": "需要推理调度与模型工程能力",
+    "maturity_level": "growing",
+    "implemented_features": ["推理服务编排", "监控与告警"],
+    "current_issues": ["GPU成本高", "多租户隔离不足"],
+    "roadmap_signals": ["计划支持更多推理后端"],
+    "future_directions": ["NPU后端适配", "企业私有化集成"],
+    "private_deploy_fit": "high",
+    "infra_transformation_opportunities": ["NPU替代部分GPU推理", "本地私有化交付"],
+    "commercial_value_level": "strong",
+    "commercial_value_reason": "具备私有化改造空间和清晰盈利路径",
+    "recommended_for_push": true
   }}
-]
+}}
 ```
-
-【重要】
-- 只输出 JSON 数组，不要有任何其他说明文字
-- 确保 JSON 格式正确有效
-- repo_name 必须与输入的仓库名称完全一致
-- solves 数组包含 3-5 个问题关键词
-- 根据项目类型选择合适的分类
 """
 
-        return prompt
+    @staticmethod
+    def _normalize_list_field(value: object, max_items: int = 8) -> List[str]:
+        """标准化字符串列表字段"""
+        if not isinstance(value, list):
+            return []
+        items: List[str] = []
+        for item in value:
+            if not isinstance(item, str):
+                continue
+            text = item.strip()
+            if not text:
+                continue
+            if text not in items:
+                items.append(text)
+        return items[:max_items]
 
-    def _parse_batch_response(self, result_text: str, original_repos: List[Dict]) -> List[Dict]:
-        """
-        解析 Claude 的批量响应
+    @staticmethod
+    def _normalize_choice(value: object, allowed: List[str], default: str) -> str:
+        """标准化枚举字段"""
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in allowed:
+                return lowered
+        return default
 
-        Args:
-            result_text: Claude 响应文本
-            original_repos: 原始仓库列表
+    def _normalize_purpose_assessment(self, data: object) -> Dict:
+        """标准化目的导向评估对象"""
+        payload = data if isinstance(data, dict) else {}
 
-        Returns:
-            解析后的仓库列表
-        """
-        # 清理可能的 markdown 代码块标记
-        result_text = result_text.strip()
-        if result_text.startswith("```json"):
-            result_text = result_text[7:]
-        if result_text.startswith("```"):
-            result_text = result_text[3:]
-        if result_text.endswith("```"):
-            result_text = result_text[:-3]
-        result_text = result_text.strip()
+        commercial_level = self._normalize_choice(
+            payload.get("commercial_value_level"),
+            ["strong", "weak", "none"],
+            "none",
+        )
+
+        recommended = payload.get("recommended_for_push")
+        if not isinstance(recommended, bool):
+            recommended = commercial_level in {"strong", "weak"}
+
+        return {
+            "is_model_service_project": bool(payload.get("is_model_service_project", False)),
+            "model_service_focus": payload.get("model_service_focus", "Not-clear"),
+            "domain": payload.get("domain", ""),
+            "domain_barrier_level": self._normalize_choice(
+                payload.get("domain_barrier_level"),
+                ["high", "medium", "low"],
+                "low",
+            ),
+            "domain_barrier_reason": payload.get("domain_barrier_reason", ""),
+            "maturity_level": self._normalize_choice(
+                payload.get("maturity_level"),
+                ["mature", "growing", "early"],
+                "early",
+            ),
+            "implemented_features": self._normalize_list_field(payload.get("implemented_features"), max_items=10),
+            "current_issues": self._normalize_list_field(payload.get("current_issues"), max_items=10),
+            "roadmap_signals": self._normalize_list_field(payload.get("roadmap_signals"), max_items=10),
+            "future_directions": self._normalize_list_field(payload.get("future_directions"), max_items=10),
+            "private_deploy_fit": self._normalize_choice(
+                payload.get("private_deploy_fit"),
+                ["high", "medium", "low"],
+                "low",
+            ),
+            "infra_transformation_opportunities": self._normalize_list_field(
+                payload.get("infra_transformation_opportunities"),
+                max_items=10,
+            ),
+            "commercial_value_level": commercial_level,
+            "commercial_value_reason": payload.get("commercial_value_reason", ""),
+            "recommended_for_push": recommended,
+        }
+
+    @staticmethod
+    def _normalize_tags(tags: object) -> List[str]:
+        """标准化标签数组"""
+        if not isinstance(tags, list):
+            return []
+
+        normalized: List[str] = []
+        for item in tags:
+            if not isinstance(item, str):
+                continue
+            value = item.strip()
+            if not value:
+                continue
+            if value not in normalized:
+                normalized.append(value)
+        return normalized[:8]
+
+    def _clean_json_text(self, result_text: str) -> str:
+        """清理 markdown 代码块标记"""
+        cleaned = result_text.strip()
+        if cleaned.startswith("```json"):
+            cleaned = cleaned[7:]
+        if cleaned.startswith("```"):
+            cleaned = cleaned[3:]
+        if cleaned.endswith("```"):
+            cleaned = cleaned[:-3]
+        return cleaned.strip()
+
+    def _parse_single_response(self, result_text: str, original_repo: Dict) -> Optional[Dict]:
+        """解析单仓库响应"""
+        cleaned = self._clean_json_text(result_text)
 
         try:
-            results = json.loads(result_text)
+            parsed = json.loads(cleaned)
 
-            if not isinstance(results, list):
-                results = [results]
+            if isinstance(parsed, list):
+                if not parsed:
+                    return None
+                parsed = parsed[0]
 
-            # 验证并补充信息
-            validated_results = []
-            original_map = {r.get("repo_name") or r.get("name"): r for r in original_repos}
+            if not isinstance(parsed, dict):
+                return None
 
-            for result in results:
-                if not isinstance(result, dict):
-                    continue
+            repo_name = parsed.get("repo_name") or original_repo.get("repo_name")
+            if not repo_name:
+                return None
 
-                repo_name = result.get("repo_name")
+            category = parsed.get("category", "other")
+            if category not in REPO_CATEGORIES:
+                category = "other"
 
-                # 确保 repo_name 存在
-                if not repo_name:
-                    continue
+            model_tags = self._normalize_tags(parsed.get("tags", []))
+            base_tags = self._normalize_tags(original_repo.get("search_tags", []))
+            merged_tags = self._normalize_tags([*base_tags, *model_tags])
+            purpose_assessment = self._normalize_purpose_assessment(parsed.get("purpose_assessment", {}))
 
-                # 从原始数据中获取额外信息
-                original = original_map.get(repo_name, {})
+            if purpose_assessment["commercial_value_level"] == "strong":
+                merged_tags = self._normalize_tags([*merged_tags, "商业价值:强"])
+            elif purpose_assessment["commercial_value_level"] == "weak":
+                merged_tags = self._normalize_tags([*merged_tags, "商业价值:弱"])
+            else:
+                merged_tags = self._normalize_tags([*merged_tags, "商业价值:无"])
 
-                validated_result = {
-                    "repo_name": repo_name,
-                    "summary": result.get("summary", f"{repo_name} 项目"),
-                    "description": result.get("description", ""),
-                    "use_case": result.get("use_case", ""),
-                    "solves": result.get("solves", []),
-                    "category": result.get("category", "other"),
-                    "category_zh": result.get("category_zh", REPO_CATEGORIES.get("other", "其他")),
-                    "tech_stack": result.get("tech_stack", []),
-                    "language": original.get("language", ""),
-                    "topics": original.get("topics", []),
-                    "readme_summary": original.get("readme_summary", ""),
-                    "owner": original.get("owner", ""),
-                    "url": original.get("url", "")
-                }
+            return {
+                "repo_name": repo_name,
+                "summary": parsed.get("summary", f"{repo_name} 项目"),
+                "description": parsed.get("description", ""),
+                "use_case": parsed.get("use_case", ""),
+                "solves": parsed.get("solves", []),
+                "category": category,
+                "category_zh": parsed.get("category_zh", REPO_CATEGORIES.get(category, "其他")),
+                "tech_stack": parsed.get("tech_stack", []),
+                "tags": merged_tags,
+                "purpose_assessment": purpose_assessment,
+                "language": original_repo.get("language", ""),
+                "topics": original_repo.get("topics", []),
+                "readme_summary": original_repo.get("readme_summary", ""),
+                "owner": original_repo.get("owner", ""),
+                "url": original_repo.get("url", ""),
+                "repo_updated_at": original_repo.get("updated_at", ""),
+            }
 
-                validated_results.append(validated_result)
+        except json.JSONDecodeError as error:
+            repo_name = original_repo.get("repo_name") or original_repo.get("name", "unknown")
+            print(f"❌ JSON 解析失败 {repo_name}: {error}")
+            print(f"   原始响应: {cleaned[:400]}...")
+            return None
 
-            print(f"✅ 成功解析 {len(validated_results)} 个仓库的 AI 分析")
-            return validated_results
+    def _fallback_summary(self, repo: Dict) -> Dict:
+        """降级方案：生成基础摘要（不作为成功请求落库）"""
+        repo_name = repo.get("repo_name") or repo.get("name", "unknown")
+        description = repo.get("description", "")
 
-        except json.JSONDecodeError as e:
-            print(f"❌ JSON 解析失败: {e}")
-            print(f"   原始响应: {result_text[:500]}...")
-            return self._fallback_summaries(original_repos)
+        category = self.categorize_by_rules(repo)
+        language = repo.get("language", "")
+
+        return {
+            "repo_name": repo_name,
+            "summary": description[:50] + "..." if len(description) > 50 else description or f"{repo_name} 项目",
+            "description": description or f"{repo_name} GitHub 项目",
+            "use_case": "待分析",
+            "solves": ["待分析"],
+            "category": category,
+            "category_zh": REPO_CATEGORIES.get(category, "其他"),
+            "tech_stack": [language] if language else [],
+            "tags": self._normalize_tags([*self._normalize_tags(repo.get("search_tags", [])), "商业价值:无"]),
+            "purpose_assessment": {
+                "is_model_service_project": False,
+                "model_service_focus": "Not-clear",
+                "domain": "",
+                "domain_barrier_level": "low",
+                "domain_barrier_reason": "待分析",
+                "maturity_level": "early",
+                "implemented_features": [],
+                "current_issues": ["待分析"],
+                "roadmap_signals": [],
+                "future_directions": [],
+                "private_deploy_fit": "low",
+                "infra_transformation_opportunities": [],
+                "commercial_value_level": "none",
+                "commercial_value_reason": "模型分析失败，使用降级结果",
+                "recommended_for_push": False,
+            },
+            "language": language,
+            "topics": repo.get("topics", []),
+            "readme_summary": repo.get("readme_summary", ""),
+            "owner": repo.get("owner", ""),
+            "url": repo.get("url", ""),
+            "repo_updated_at": repo.get("updated_at", ""),
+            "fallback": True,
+        }
 
     def _fallback_summaries(self, repos: List[Dict]) -> List[Dict]:
-        """
-        降级方案：当 AI 分析失败时使用基本信息
-
-        Args:
-            repos: 仓库列表
-
-        Returns:
-            基本的仓库摘要列表
-        """
-        results = []
-
-        for repo in repos:
-            repo_name = repo.get("repo_name") or repo.get("name", "unknown")
-            description = repo.get("description", "")
-
-            # 简单的分类推断
-            language = repo.get("language", "").lower()
-            topics = repo.get("topics", [])
-
-            category = "other"
-            if "plugin" in repo_name or "extension" in topics:
-                category = "plugin"
-            elif "template" in repo_name or "starter" in topics or "boilerplate" in topics:
-                category = "template"
-            elif "demo" in repo_name or "example" in topics:
-                category = "demo"
-            elif "docs" in repo_name or "documentation" in topics or "guide" in repo_name:
-                category = "docs"
-            elif "cli" in repo_name or "tool" in repo_name:
-                category = "tool"
-
-            results.append({
-                "repo_name": repo_name,
-                "summary": description[:50] + "..." if len(description) > 50 else description or f"{repo_name} 项目",
-                "description": description or f"{repo_name} GitHub 项目",
-                "use_case": "待分析",
-                "solves": ["待分析"],
-                "category": category,
-                "category_zh": REPO_CATEGORIES.get(category, "其他"),
-                "tech_stack": [language] if language else [],
-                "language": repo.get("language", ""),
-                "topics": repo.get("topics", []),
-                "readme_summary": repo.get("readme_summary", ""),
-                "owner": repo.get("owner", ""),
-                "url": repo.get("url", ""),
-                "fallback": True
-            })
-
-        return results
+        """批量降级（兼容旧调用）"""
+        return [self._fallback_summary(repo) for repo in repos]
 
     def categorize_by_rules(self, repo: Dict) -> str:
         """
@@ -349,41 +542,33 @@ class ClaudeSummarizer:
         repo_name = repo.get("repo_name", "").lower()
         name = repo.get("name", "").lower()
         description = (repo.get("description") or "").lower()
-        topics = [t.lower() for t in repo.get("topics", [])]
+        topics = [topic.lower() for topic in repo.get("topics", [])]
         language = (repo.get("language") or "").lower()
 
         combined_text = f"{repo_name} {name} {description} {' '.join(topics)} {language}"
 
-        # Plugin 分类
-        if any(kw in combined_text for kw in ["plugin", "extension", "vscode", "chrome", "firefox"]):
+        if any(keyword in combined_text for keyword in ["plugin", "extension", "vscode", "chrome", "firefox"]):
             return "plugin"
 
-        # Template 分类
-        if any(kw in combined_text for kw in ["template", "starter", "boilerplate", "scaffold"]):
+        if any(keyword in combined_text for keyword in ["template", "starter", "boilerplate", "scaffold"]):
             return "template"
 
-        # Demo 分类
-        if any(kw in combined_text for kw in ["demo", "example", "sample", "tutorial"]):
+        if any(keyword in combined_text for keyword in ["demo", "example", "sample", "tutorial"]):
             return "demo"
 
-        # Docs 分类
-        if any(kw in combined_text for kw in ["doc", "guide", "tutorial", "book", "documentation"]):
+        if any(keyword in combined_text for keyword in ["doc", "guide", "tutorial", "book", "documentation"]):
             return "docs"
 
-        # Integration 分类
-        if any(kw in combined_text for kw in ["integration", "wrapper", "sdk", "api"]):
+        if any(keyword in combined_text for keyword in ["integration", "wrapper", "sdk", "api"]):
             return "integration"
 
-        # Tool 分类
-        if any(kw in combined_text for kw in ["cli", "tool", "utility", "script"]):
+        if any(keyword in combined_text for keyword in ["cli", "tool", "utility", "script"]):
             return "tool"
 
-        # App 分类
-        if any(kw in combined_text for kw in ["app", "application", "webapp", "dashboard"]):
+        if any(keyword in combined_text for keyword in ["app", "application", "webapp", "dashboard"]):
             return "app"
 
-        # Library 分类
-        if any(kw in combined_text for kw in ["lib", "library", "package", "framework"]):
+        if any(keyword in combined_text for keyword in ["lib", "library", "package", "framework"]):
             return "library"
 
         return "other"

@@ -1,7 +1,7 @@
 [project]
 name = "github-topics-trending"
 version = "0.1.0"
-description = "Add your description here"
+description = "Track GitHub topic trends with AI analysis, reports, and static pages"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

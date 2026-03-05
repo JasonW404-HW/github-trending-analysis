@@ -6,8 +6,8 @@ import os
 import sqlite3
 import json
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any
 from pathlib import Path
+from typing import Dict, List, Optional, Any
 
 from src.config import DB_PATH, DB_RETENTION_DAYS
 
@@ -50,6 +50,24 @@ class Database:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
+    def _table_columns(self, table_name: str) -> List[str]:
+        """获取表字段列表"""
+        self.connect()
+        cursor = self.conn.cursor()
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        return [row["name"] for row in cursor.fetchall()]
+
+    def _ensure_column(self, table_name: str, column_name: str, column_type: str) -> None:
+        """确保表存在指定字段（用于轻量 schema 迁移）"""
+        columns = self._table_columns(table_name)
+        if column_name in columns:
+            return
+
+        cursor = self.conn.cursor()
+        cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
+        self.conn.commit()
+        print(f"🔧 数据库迁移: {table_name} 新增字段 {column_name}")
+
     def init_db(self) -> None:
         """初始化数据库表"""
         self.connect()
@@ -69,6 +87,7 @@ class Database:
                 issues INTEGER,
                 language TEXT,
                 url TEXT,
+                repo_updated_at TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(date, repo_name)
             )
@@ -83,6 +102,8 @@ class Database:
                 description TEXT,
                 use_case TEXT,
                 solves TEXT,
+                tags TEXT,
+                purpose_assessment TEXT,
                 category TEXT NOT NULL,
                 category_zh TEXT NOT NULL,
                 topics TEXT,
@@ -90,6 +111,8 @@ class Database:
                 readme_summary TEXT,
                 owner TEXT NOT NULL,
                 url TEXT NOT NULL,
+                repo_updated_at TEXT,
+                prompt_hash TEXT,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -106,6 +129,24 @@ class Database:
                 UNIQUE(repo_name, date)
             )
         """)
+
+        # 4. github_fetch_state - GitHub 抓取状态缓存
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS github_fetch_state (
+                request_key TEXT PRIMARY KEY,
+                etag TEXT,
+                last_checked_at TEXT,
+                last_success_at TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # 兼容旧库：补充新增字段
+        self._ensure_column("repos_daily", "repo_updated_at", "TEXT")
+        self._ensure_column("repos_details", "repo_updated_at", "TEXT")
+        self._ensure_column("repos_details", "tags", "TEXT")
+        self._ensure_column("repos_details", "prompt_hash", "TEXT")
+        self._ensure_column("repos_details", "purpose_assessment", "TEXT")
 
         # 创建索引
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_daily_date ON repos_daily(date)")
@@ -134,8 +175,8 @@ class Database:
         for repo in repos:
             cursor.execute("""
                 INSERT OR REPLACE INTO repos_daily
-                (date, rank, repo_name, owner, stars, stars_delta, forks, issues, language, url)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (date, rank, repo_name, owner, stars, stars_delta, forks, issues, language, url, repo_updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 date,
                 repo.get("rank"),
@@ -146,7 +187,8 @@ class Database:
                 repo.get("forks"),
                 repo.get("issues"),
                 repo.get("language"),
-                repo.get("url", "")
+                repo.get("url", ""),
+                repo.get("updated_at", "")
             ))
 
             # 同时写入历史表
@@ -179,7 +221,8 @@ class Database:
         cursor = self.conn.cursor()
 
         cursor.execute("""
-            SELECT rank, repo_name, owner, stars, stars_delta, forks, issues, language, url
+            SELECT rank, repo_name, owner, stars, stars_delta, forks, issues, language, url,
+                   repo_updated_at AS updated_at
             FROM repos_daily
             WHERE date = ?
             ORDER BY rank
@@ -201,42 +244,56 @@ class Database:
         yesterday = (datetime.strptime(date, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
         return self.get_repos_by_date(yesterday)
 
-    def save_repo_details(self, details: List[Dict]) -> None:
+    def save_repo_details(self, details: List[Dict], verbose: bool = True) -> None:
         """
         保存/更新仓库详情
 
         Args:
             details: AI 分析的仓库详情列表
         """
+        if not details:
+            return
+
         self.connect()
         cursor = self.conn.cursor()
 
         for detail in details:
             solves_json = json.dumps(detail.get("solves", []), ensure_ascii=False)
+            tags_json = json.dumps(detail.get("tags", []), ensure_ascii=False)
             topics_json = json.dumps(detail.get("topics", []), ensure_ascii=False)
+            purpose_assessment_json = json.dumps(detail.get("purpose_assessment", {}), ensure_ascii=False)
 
             cursor.execute("""
                 INSERT OR REPLACE INTO repos_details
-                (repo_name, summary, description, use_case, solves, category, category_zh,
-                 topics, language, readme_summary, owner, url)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (repo_name, summary, description, use_case, solves, tags, category, category_zh,
+                 purpose_assessment, topics, language, readme_summary, owner, url, repo_updated_at, prompt_hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 detail.get("repo_name"),
                 detail.get("summary"),
                 detail.get("description"),
                 detail.get("use_case"),
                 solves_json,
+                tags_json,
                 detail.get("category"),
                 detail.get("category_zh"),
+                purpose_assessment_json,
                 topics_json,
                 detail.get("language"),
                 detail.get("readme_summary"),
                 detail.get("owner"),
-                detail.get("url")
+                detail.get("url"),
+                detail.get("repo_updated_at"),
+                detail.get("prompt_hash", "")
             ))
 
         self.conn.commit()
-        print(f"✅ 保存仓库详情: {len(details)} 条记录")
+        if verbose:
+            print(f"✅ 保存仓库详情: {len(details)} 条记录")
+
+    def save_repo_detail(self, detail: Dict, verbose: bool = False) -> None:
+        """保存单条仓库详情（用于每次成功请求及时落库）"""
+        self.save_repo_details([detail], verbose=verbose)
 
     def get_repo_details(self, repo_name: str) -> Optional[Dict]:
         """
@@ -252,8 +309,8 @@ class Database:
         cursor = self.conn.cursor()
 
         cursor.execute("""
-            SELECT repo_name, summary, description, use_case, solves, category, category_zh,
-                   topics, language, readme_summary, owner, url
+               SELECT repo_name, summary, description, use_case, solves, tags, category, category_zh,
+                 purpose_assessment, topics, language, readme_summary, owner, url, repo_updated_at, prompt_hash
             FROM repos_details
             WHERE repo_name = ?
         """, (repo_name,))
@@ -264,6 +321,10 @@ class Database:
             # 解析 JSON 字段
             if result.get("solves"):
                 result["solves"] = json.loads(result["solves"])
+            if result.get("tags"):
+                result["tags"] = json.loads(result["tags"])
+            if result.get("purpose_assessment"):
+                result["purpose_assessment"] = json.loads(result["purpose_assessment"])
             if result.get("topics"):
                 result["topics"] = json.loads(result["topics"])
             return result
@@ -280,8 +341,8 @@ class Database:
         cursor = self.conn.cursor()
 
         cursor.execute("""
-            SELECT repo_name, summary, description, use_case, solves, category, category_zh,
-                   topics, language, readme_summary, owner, url
+               SELECT repo_name, summary, description, use_case, solves, tags, category, category_zh,
+                 purpose_assessment, topics, language, readme_summary, owner, url, repo_updated_at, prompt_hash
             FROM repos_details
         """)
 
@@ -290,11 +351,80 @@ class Database:
             detail = dict(row)
             if detail.get("solves"):
                 detail["solves"] = json.loads(detail["solves"])
+            if detail.get("tags"):
+                detail["tags"] = json.loads(detail["tags"])
+            if detail.get("purpose_assessment"):
+                detail["purpose_assessment"] = json.loads(detail["purpose_assessment"])
             if detail.get("topics"):
                 detail["topics"] = json.loads(detail["topics"])
             result[detail["repo_name"]] = detail
 
         return result
+
+    def get_repo_details_if_fresh(
+        self,
+        repo_name: str,
+        repo_updated_at: str,
+        prompt_hash: str = "",
+    ) -> Optional[Dict]:
+        """
+        获取指定仓库的最新分析结果（按 repo_name + repo_updated_at + prompt_hash 匹配）
+        """
+        if not repo_updated_at:
+            return None
+
+        detail = self.get_repo_details(repo_name)
+        if not detail:
+            return None
+
+        if detail.get("repo_updated_at") != repo_updated_at:
+            return None
+
+        if prompt_hash and detail.get("prompt_hash", "") != prompt_hash:
+            return None
+
+        if detail.get("repo_updated_at") == repo_updated_at:
+            return detail
+
+        return None
+
+    def get_github_fetch_state(self, request_key: str) -> Optional[Dict]:
+        """获取 GitHub 抓取状态"""
+        self.connect()
+        cursor = self.conn.cursor()
+
+        cursor.execute("""
+            SELECT request_key, etag, last_checked_at, last_success_at, updated_at
+            FROM github_fetch_state
+            WHERE request_key = ?
+        """, (request_key,))
+
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def upsert_github_fetch_state(
+        self,
+        request_key: str,
+        etag: Optional[str],
+        last_checked_at: Optional[str],
+        last_success_at: Optional[str],
+    ) -> None:
+        """写入/更新 GitHub 抓取状态"""
+        self.connect()
+        cursor = self.conn.cursor()
+
+        cursor.execute("""
+            INSERT INTO github_fetch_state
+            (request_key, etag, last_checked_at, last_success_at, updated_at)
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(request_key) DO UPDATE SET
+                etag = excluded.etag,
+                last_checked_at = excluded.last_checked_at,
+                last_success_at = COALESCE(excluded.last_success_at, github_fetch_state.last_success_at),
+                updated_at = CURRENT_TIMESTAMP
+        """, (request_key, etag, last_checked_at, last_success_at))
+
+        self.conn.commit()
 
     def cleanup_old_data(self, days: int = None) -> int:
         """
@@ -507,6 +637,117 @@ class Database:
             """, (limit,))
 
         return [dict(row) for row in cursor.fetchall()]
+
+    @staticmethod
+    def _safe_parse_json_text(value: Optional[str], default: Any) -> Any:
+        """安全解析 JSON 字符串"""
+        if not value:
+            return default
+
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return default
+
+    def get_opportunity_report(
+        self,
+        date: str,
+        min_level: str = "strong",
+        limit: int = 50,
+    ) -> Dict:
+        """
+        获取目标机会报表（用于运营复盘）
+
+        Args:
+            date: 日期 YYYY-MM-DD
+            min_level: 商业价值阈值 strong/weak
+            limit: 返回项目上限
+
+        Returns:
+            结构化机会报表
+        """
+        threshold = (min_level or "strong").lower().strip()
+        if threshold not in {"strong", "weak"}:
+            threshold = "strong"
+
+        allowed_levels = {"strong"} if threshold == "strong" else {"strong", "weak"}
+
+        self.connect()
+        cursor = self.conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT r.rank, r.repo_name, r.owner, r.stars, r.stars_delta, r.language, r.url,
+                   d.summary, d.tags, d.purpose_assessment
+            FROM repos_daily r
+            LEFT JOIN repos_details d ON r.repo_name = d.repo_name
+            WHERE r.date = ?
+            ORDER BY r.rank ASC
+            """,
+            (date,),
+        )
+
+        rows = [dict(row) for row in cursor.fetchall()]
+        projects: List[Dict] = []
+        strong_count = 0
+        weak_count = 0
+
+        for row in rows:
+            purpose = self._safe_parse_json_text(row.get("purpose_assessment"), default={})
+            if not isinstance(purpose, dict):
+                purpose = {}
+
+            commercial_level = str(purpose.get("commercial_value_level", "none")).lower()
+            recommended = bool(purpose.get("recommended_for_push", False))
+
+            if not recommended or commercial_level not in allowed_levels:
+                continue
+
+            if commercial_level == "strong":
+                strong_count += 1
+            elif commercial_level == "weak":
+                weak_count += 1
+
+            tags = self._safe_parse_json_text(row.get("tags"), default=[])
+            if not isinstance(tags, list):
+                tags = []
+
+            projects.append(
+                {
+                    "rank": row.get("rank"),
+                    "repo_name": row.get("repo_name"),
+                    "owner": row.get("owner"),
+                    "stars": row.get("stars", 0),
+                    "stars_delta": row.get("stars_delta", 0),
+                    "language": row.get("language", ""),
+                    "url": row.get("url", ""),
+                    "summary": row.get("summary", ""),
+                    "tags": tags,
+                    "domain": purpose.get("domain", ""),
+                    "domain_barrier_level": purpose.get("domain_barrier_level", ""),
+                    "maturity_level": purpose.get("maturity_level", ""),
+                    "commercial_value_level": commercial_level,
+                    "commercial_value_reason": purpose.get("commercial_value_reason", ""),
+                    "private_deploy_fit": purpose.get("private_deploy_fit", ""),
+                    "implemented_features": purpose.get("implemented_features", []) or [],
+                    "current_issues": purpose.get("current_issues", []) or [],
+                    "roadmap_signals": purpose.get("roadmap_signals", []) or [],
+                    "future_directions": purpose.get("future_directions", []) or [],
+                    "infra_transformation_opportunities": purpose.get("infra_transformation_opportunities", []) or [],
+                }
+            )
+
+        limited_projects = projects[: max(1, limit)]
+
+        return {
+            "date": date,
+            "min_level": threshold,
+            "total_scanned": len(rows),
+            "total_candidates": len(projects),
+            "strong_count": strong_count,
+            "weak_count": weak_count,
+            "projects": limited_projects,
+        }
 
 
 def get_database() -> Database:

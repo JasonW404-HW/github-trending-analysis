@@ -17,14 +17,17 @@
 ```bash
 # 查看指定话题的趋势
 cd /path/to/github-topics-trending
-python -m src.main
+uv run main.py
 ```
 
 ### 仅获取数据
 
 ```bash
 # 不发送邮件，仅获取和分析数据
-python -m src.main --fetch-only
+uv run main.py --fetch-only
+
+# 输出目标机会报表（基于已落库数据）
+uv run main.py --opportunity-report
 ```
 
 ## 环境变量配置
@@ -39,6 +42,15 @@ python -m src.main --fetch-only
 | `RESEND_FROM_EMAIL` | 发件人邮箱 | 否 |
 | `DB_PATH` | 数据库路径 (默认: data/github-trending.db) | 否 |
 | `DB_RETENTION_DAYS` | 数据保留天数 (默认: 90) | 否 |
+| `GITHUB_CACHE_MINUTES` | GitHub 抓取缓存周期（分钟，默认: 30） | 否 |
+| `MODEL_MAX_CONCURRENCY` | 模型请求最大并发（默认: 4） | 否 |
+| `MODEL_MAX_RPM` | 模型请求每分钟上限（默认: 80） | 否 |
+| `ANALYSIS_KEYWORDS` | 检索关键词（逗号分隔） | 否 |
+| `ANALYSIS_KEYWORD_MATCH_MODE` | 关键词匹配模式（any/all，默认: any） | 否 |
+| `ANALYSIS_CUSTOM_PROMPT` | 自定义模型分析提示词 | 否 |
+| `PUSH_MIN_COMMERCIAL_LEVEL` | 商业价值推送阈值（strong/weak，默认: strong） | 否 |
+| `HTTP_429_COOLDOWN_SECONDS` | 429 冷却秒数（默认: 60） | 否 |
+| `HTTP_429_MAX_RETRIES` | 429 最大重试次数（默认: 3） | 否 |
 
 ## 仓库分类
 

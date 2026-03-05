@@ -132,6 +132,8 @@ class TrendAnalyzer:
                 repo["description"] = summary.get("description", "")
                 repo["use_case"] = summary.get("use_case", "")
                 repo["solves"] = summary.get("solves", [])
+                repo["tags"] = summary.get("tags") or []
+                repo["purpose_assessment"] = summary.get("purpose_assessment", {}) or {}
                 repo["category"] = summary.get("category", "")
                 repo["category_zh"] = summary.get("category_zh", "")
             else:
@@ -139,6 +141,8 @@ class TrendAnalyzer:
                 repo["description"] = ""
                 repo["use_case"] = ""
                 repo["solves"] = []
+                repo["tags"] = []
+                repo["purpose_assessment"] = {}
                 repo["category"] = ""
                 repo["category_zh"] = ""
 
@@ -175,6 +179,8 @@ class TrendAnalyzer:
                 if repo_name in ai_summaries:
                     summary = ai_summaries[repo_name]
                     repo["summary"] = summary.get("summary", "")
+                    repo["tags"] = summary.get("tags") or []
+                    repo["purpose_assessment"] = summary.get("purpose_assessment", {}) or {}
                     repo["category_zh"] = summary.get("category_zh", "")
 
         return result
@@ -200,6 +206,8 @@ class TrendAnalyzer:
                 if repo_name in ai_summaries:
                     summary = ai_summaries[repo_name]
                     repo["summary"] = summary.get("summary", "")
+                    repo["tags"] = summary.get("tags") or []
+                    repo["purpose_assessment"] = summary.get("purpose_assessment", {}) or {}
                     repo["category_zh"] = summary.get("category_zh", "")
 
         return new_entries
@@ -232,6 +240,8 @@ class TrendAnalyzer:
                 if ai_summaries and repo_name in ai_summaries:
                     summary = ai_summaries[repo_name]
                     dropped[-1]["summary"] = summary.get("summary", "")
+                    dropped[-1]["tags"] = summary.get("tags") or []
+                    dropped[-1]["purpose_assessment"] = summary.get("purpose_assessment", {}) or {}
                     dropped[-1]["category_zh"] = summary.get("category_zh", "")
 
         return dropped
@@ -263,6 +273,8 @@ class TrendAnalyzer:
                 if repo_name in ai_summaries:
                     summary = ai_summaries[repo_name]
                     repo["summary"] = summary.get("summary", "")
+                    repo["tags"] = summary.get("tags") or []
+                    repo["purpose_assessment"] = summary.get("purpose_assessment", {}) or {}
                     repo["category_zh"] = summary.get("category_zh", "")
 
         return surging
@@ -292,6 +304,8 @@ class TrendAnalyzer:
                 if repo_name in ai_summaries:
                     summary = ai_summaries[repo_name]
                     repo["summary"] = summary.get("summary", "")
+                    repo["tags"] = summary.get("tags") or []
+                    repo["purpose_assessment"] = summary.get("purpose_assessment", {}) or {}
                     repo["category_zh"] = summary.get("category_zh", "")
 
         return active
