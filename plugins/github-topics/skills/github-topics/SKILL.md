@@ -5,7 +5,7 @@
 ## 功能
 
 - **数据采集**: 使用 GitHub API 按话题获取热门仓库
-- **AI 分析**: 使用 Claude AI 对仓库进行智能分类和摘要
+- **AI 分析**: 使用 LiteLLM 网关对仓库进行智能分类和摘要
 - **趋势计算**: 计算星标变化、新晋项目、活跃项目等趋势
 - **邮件报告**: 发送专业的 HTML 邮件报告
 - **静态网站**: 生成 GitHub Pages 静态展示页面
@@ -36,7 +36,10 @@ uv run main.py --opportunity-report
 |------|------|------|
 | `GH_TOKEN` | GitHub Personal Access Token | 是 |
 | `TOPIC` | 要追踪的 GitHub Topic (默认: claude-code) | 否 |
-| `ZHIPU_API_KEY` | Claude API Key (智谱代理) | 是 |
+| `MODEL_PROVIDER` | 模型供应商（如 MOONSHOT） | 是 |
+| `MODEL_TOKEN` | 模型供应商 API Token | 是 |
+| `MODEL_NAME` | 模型名称（如 moonshot/moonshot-v1-8k） | 是 |
+| `MODEL_BASE_URL` | 供应商 Base URL（可留空） | 否 |
 | `RESEND_API_KEY` | Resend 邮件服务 API Key | 是 |
 | `EMAIL_TO` | 收件人邮箱（多个用逗号分隔） | 是 |
 | `RESEND_FROM_EMAIL` | 发件人邮箱 | 否 |

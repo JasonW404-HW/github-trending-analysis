@@ -2,6 +2,7 @@
 配置模块 - GitHub Topics Trending 配置管理
 """
 import os
+import re
 from typing import Optional
 from dotenv import load_dotenv
 
@@ -9,17 +10,48 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ============================================================================
-# OpenAI API 配置 (兼容 Kimi/New API)
+# 模型网关配置（LiteLLM）
+# 参考: https://docs.litellm.ai/docs/providers
 # ============================================================================
-ANTHROPIC_BASE_URL = os.getenv(
-    "ANTHROPIC_BASE_URL",
-    "https://open.bigmodel.cn/api/anthropic"
-)
-ZHIPU_API_KEY = os.getenv("ZHIPU_API_KEY")
+MODEL_PROVIDER = (os.getenv("MODEL_PROVIDER") or "").strip()
+MODEL_BASE_URL = (os.getenv("MODEL_BASE_URL") or "").strip()
+MODEL_TOKEN = (os.getenv("MODEL_TOKEN") or "").strip()
+MODEL_NAME = (os.getenv("MODEL_NAME") or "").strip()
 
-# Claude 模型配置
-CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-3-5-sonnet-20241022")
-CLAUDE_MAX_TOKENS = 8192
+
+def _normalize_provider_name(value: str) -> str:
+    """将 provider 名标准化为环境变量前缀，如 moonshot -> MOONSHOT。"""
+    name = str(value or "").strip().upper()
+    if not name:
+        return ""
+    normalized = re.sub(r"[^A-Z0-9]+", "_", name).strip("_")
+    return normalized
+
+
+MODEL_PROVIDER_ENV_PREFIX = _normalize_provider_name(MODEL_PROVIDER)
+MODEL_PROVIDER_API_KEY_ENV = (
+    f"{MODEL_PROVIDER_ENV_PREFIX}_API_KEY" if MODEL_PROVIDER_ENV_PREFIX else ""
+)
+MODEL_PROVIDER_API_BASE_ENV = (
+    f"{MODEL_PROVIDER_ENV_PREFIX}_API_BASE" if MODEL_PROVIDER_ENV_PREFIX else ""
+)
+
+if MODEL_PROVIDER_API_KEY_ENV and MODEL_TOKEN:
+    os.environ[MODEL_PROVIDER_API_KEY_ENV] = MODEL_TOKEN
+
+if MODEL_PROVIDER_API_BASE_ENV and MODEL_BASE_URL:
+    os.environ[MODEL_PROVIDER_API_BASE_ENV] = MODEL_BASE_URL
+
+DEFAULT_LLM_MAX_TOKENS = 8192
+
+_llm_max_tokens_raw = os.getenv("LLM_MAX_TOKENS")
+if _llm_max_tokens_raw:
+    try:
+        LLM_MAX_TOKENS = max(1, int(_llm_max_tokens_raw))
+    except ValueError:
+        LLM_MAX_TOKENS = DEFAULT_LLM_MAX_TOKENS
+else:
+    LLM_MAX_TOKENS = DEFAULT_LLM_MAX_TOKENS
 
 # ============================================================================
 # GitHub API 配置

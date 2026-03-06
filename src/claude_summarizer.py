@@ -1,6 +1,6 @@
 """
 Claude Summarizer - AI 总结和分类 GitHub 仓库
-使用 Claude API 对仓库进行分析、总结和分类
+使用 LiteLLM 对仓库进行分析、总结和分类
 """
 
 import json
@@ -12,18 +12,18 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Deque, Dict, List, Optional, Tuple
 
-from anthropic import Anthropic
+from litellm import completion
 
 from src.config import (
     ANALYSIS_CUSTOM_PROMPT,
-    ANTHROPIC_BASE_URL,
+    MODEL_BASE_URL,
     CATEGORIES,
-    CLAUDE_MAX_TOKENS,
-    CLAUDE_MODEL,
+    LLM_MAX_TOKENS,
+    MODEL_NAME,
     LLM_JSON_REPAIR_RETRIES,
+    MODEL_TOKEN,
     MODEL_MAX_CONCURRENCY,
     MODEL_MAX_RPM,
-    ZHIPU_API_KEY,
 )
 from src.retry_utils import execute_with_429_retry
 
@@ -76,7 +76,7 @@ class ClaudeSummarizer:
         json_repair_retries: Optional[int] = None,
     ):
         """
-        初始化 Claude 客户端配置
+        初始化模型客户端配置
 
         Args:
             api_key: API 密钥，默认从环境变量读取
@@ -85,10 +85,10 @@ class ClaudeSummarizer:
             max_rpm: 每分钟最大请求数
             extra_prompt: 自定义分析提示词（来自配置）
         """
-        self.api_key = api_key or ZHIPU_API_KEY
-        self.base_url = base_url or ANTHROPIC_BASE_URL
-        self.model = CLAUDE_MODEL
-        self.max_tokens = CLAUDE_MAX_TOKENS
+        self.api_key = api_key or MODEL_TOKEN
+        self.base_url = base_url if base_url is not None else MODEL_BASE_URL
+        self.model = MODEL_NAME
+        self.max_tokens = LLM_MAX_TOKENS
         self.max_concurrency = max(1, max_concurrency or MODEL_MAX_CONCURRENCY)
         self.max_rpm = max(1, max_rpm or MODEL_MAX_RPM)
         self.json_repair_retries = max(
@@ -98,18 +98,25 @@ class ClaudeSummarizer:
         self.extra_prompt = (extra_prompt if extra_prompt is not None else ANALYSIS_CUSTOM_PROMPT).strip()
         self._rpm_limiter = _RpmLimiter(self.max_rpm)
 
-        if not self.api_key:
-            raise ValueError("ZHIPU_API_KEY 环境变量未设置")
+        if not self.model:
+            raise ValueError("MODEL_NAME 环境变量未设置")
 
         try:
-            self._create_client()
-            print("✅ Claude 客户端初始化成功")
+            print("✅ LiteLLM 客户端初始化成功")
         except Exception as error:
-            raise Exception(f"Claude 客户端初始化失败: {error}")
+            raise Exception(f"LiteLLM 客户端初始化失败: {error}")
 
-    def _create_client(self) -> Anthropic:
-        """创建 Anthropic 客户端"""
-        return Anthropic(base_url=self.base_url, api_key=self.api_key)
+    def _build_completion_options(self) -> Dict:
+        """构建 LiteLLM completion 的可选参数。"""
+        options: Dict[str, object] = {}
+        if self.api_key:
+            options["api_key"] = self.api_key
+
+        base_url = str(self.base_url or "").strip()
+        if base_url:
+            options["base_url"] = base_url
+
+        return options
 
     def summarize_and_classify(
         self,
@@ -181,7 +188,7 @@ class ClaudeSummarizer:
 
         try:
             response = execute_with_429_retry(
-                operation=lambda: self._create_client().messages.create(
+                operation=lambda: completion(
                     model=self.model,
                     max_tokens=self.max_tokens,
                     temperature=0.3,
@@ -191,8 +198,9 @@ class ClaudeSummarizer:
                             "content": prompt,
                         }
                     ],
+                    **self._build_completion_options(),
                 ),
-                context=f"Claude 分析 {repo_name}",
+                context=f"LLM 分析 {repo_name}",
             )
 
             result_text = self._extract_response_text(response)
@@ -231,21 +239,43 @@ class ClaudeSummarizer:
             return None
 
         except Exception as error:
-            print(f"❌ Claude API 调用失败 {repo_name}: {error}")
+            print(f"❌ LLM API 调用失败 {repo_name}: {error}")
             return None
 
     @staticmethod
     def _extract_response_text(response: object) -> str:
-        """提取 Claude 响应中的文本内容"""
-        content_blocks = getattr(response, "content", [])
+        """提取 LiteLLM 响应中的文本内容"""
+        choices = getattr(response, "choices", [])
+        if not isinstance(choices, list) or not choices:
+            return ""
+
+        message = getattr(choices[0], "message", None)
+        if message is None:
+            return ""
+
+        content = getattr(message, "content", "")
+        if isinstance(content, str):
+            return content.strip()
+
         texts: List[str] = []
+        if isinstance(content, list):
+            for part in content:
+                if isinstance(part, str) and part.strip():
+                    texts.append(part.strip())
+                    continue
+                if isinstance(part, dict):
+                    text = str(part.get("text") or "").strip()
+                    if text:
+                        texts.append(text)
+                    continue
+                text = str(getattr(part, "text", "") or "").strip()
+                if text:
+                    texts.append(text)
 
-        for block in content_blocks:
-            text = getattr(block, "text", None)
-            if isinstance(text, str) and text.strip():
-                texts.append(text)
+        if texts:
+            return "\n".join(texts).strip()
 
-        return "\n".join(texts).strip()
+        return str(content or "").strip()
 
     @staticmethod
     def _remove_trailing_commas(text: str) -> str:
@@ -416,7 +446,7 @@ class ClaudeSummarizer:
 
         try:
             response = execute_with_429_retry(
-                operation=lambda: self._create_client().messages.create(
+                operation=lambda: completion(
                     model=self.model,
                     max_tokens=min(self.max_tokens, 2048),
                     temperature=0,
@@ -426,8 +456,9 @@ class ClaudeSummarizer:
                             "content": prompt,
                         }
                     ],
+                    **self._build_completion_options(),
                 ),
-                context=f"Claude JSON 修复 {repo_name} (attempt={attempt})",
+                context=f"LLM JSON 修复 {repo_name} (attempt={attempt})",
             )
         except Exception as error:
             print(f"⚠️ JSON 修复请求失败 {repo_name}: {error}")

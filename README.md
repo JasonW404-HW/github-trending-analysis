@@ -70,7 +70,7 @@
 - Python 3.12+
 - uv
 - GitHub Personal Access Token
-- ZHIPU API Key（Claude 兼容代理）
+- Model Provider Token（通过 LiteLLM 接入模型服务）
 - Resend API Key
 
 ### 安装
@@ -90,9 +90,14 @@ cp .env.example .env
 编辑 `.env`，至少配置：
 
 - `GH_TOKEN`
-- `ZHIPU_API_KEY`
+- `MODEL_PROVIDER`（例如 `MOONSHOT`）
+- `MODEL_TOKEN`
+- `MODEL_NAME`
 - `RESEND_API_KEY`
 - `EMAIL_TO`（支持多个收件人，英文逗号分隔）
+
+`MODEL_PROVIDER` 的可选值与模型命名方式请参考：
+https://docs.litellm.ai/docs/providers
 
 示例：
 
@@ -182,7 +187,11 @@ scripts/setup_ubuntu_cron.sh --uninstall
 | -------------------------------------- | ---- | ------------------------------- |
 | `GH_TOKEN`                             | 是   | GitHub Token                    |
 | `TOPIC`                                | 否   | 追踪话题（默认 `claude-code`）  |
-| `ZHIPU_API_KEY`                        | 是   | 模型 API Key                    |
+| `MODEL_PROVIDER`                       | 是   | 模型供应商（如 `MOONSHOT`）     |
+| `MODEL_BASE_URL`                       | 否   | 供应商 Base URL（默认留空）     |
+| `MODEL_TOKEN`                          | 是   | 供应商 API Token                |
+| `MODEL_NAME`                           | 是   | 模型名（如 `moonshot/...`）     |
+| `LLM_MAX_TOKENS`                       | 否   | 模型最大输出 token              |
 | `RESEND_API_KEY`                       | 是   | Resend API Key                  |
 | `EMAIL_TO`                             | 是   | 收件人邮箱（多个用逗号分隔）    |
 | `TOP_N_DETAILS`                        | 否   | AI 分析项目上限（debug 可设 2） |
@@ -198,6 +207,10 @@ scripts/setup_ubuntu_cron.sh --uninstall
 | `GITHUB_ACTIVITY_DETAIL_LAST_COMMENTS` | 否   | 二阶段每条保留的最后对话条数    |
 | `PUSH_MIN_COMMERCIAL_LEVEL`            | 否   | `strong` / `weak`               |
 | `GITHUB_CACHE_MINUTES`                 | 否   | 抓取缓存分钟数                  |
+
+运行时注入规则：
+- 会根据 `MODEL_PROVIDER` 自动注入 `os.environ[<PROVIDER>_API_KEY] = MODEL_TOKEN`。
+- 若设置了 `MODEL_BASE_URL`，会额外注入 `os.environ[<PROVIDER>_API_BASE] = MODEL_BASE_URL`。
 
 ---
 

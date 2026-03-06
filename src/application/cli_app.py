@@ -22,7 +22,11 @@ from src.config import (
     RESEND_FROM_EMAIL,
     TOPIC,
     TOP_N_DETAILS,
-    ZHIPU_API_KEY,
+    MODEL_BASE_URL,
+    MODEL_NAME,
+    MODEL_PROVIDER,
+    MODEL_PROVIDER_ENV_PREFIX,
+    MODEL_TOKEN,
 )
 from src.database import Database
 from src.email_reporter import EmailReporter
@@ -58,8 +62,16 @@ def check_environment() -> bool:
 
     if not GITHUB_TOKEN:
         errors.append("GH_TOKEN 环境变量未设置 (请提供 GitHub Personal Access Token)")
-    if not ZHIPU_API_KEY:
-        errors.append("ZHIPU_API_KEY 环境变量未设置 (请提供 Claude API Key)")
+    if not MODEL_PROVIDER:
+        errors.append("MODEL_PROVIDER 环境变量未设置 (例如 MOONSHOT)")
+    elif not MODEL_PROVIDER_ENV_PREFIX:
+        errors.append("MODEL_PROVIDER 格式错误 (仅允许字母/数字/下划线/连接符)")
+    if not MODEL_TOKEN:
+        errors.append("MODEL_TOKEN 环境变量未设置")
+    if not MODEL_NAME:
+        errors.append("MODEL_NAME 环境变量未设置")
+    if MODEL_BASE_URL and not MODEL_BASE_URL.startswith(("http://", "https://")):
+        errors.append("MODEL_BASE_URL 格式错误 (需以 http:// 或 https:// 开头)")
     if not RESEND_API_KEY:
         errors.append("RESEND_API_KEY 环境变量未设置 (请提供 Resend API Key)")
     if not EMAIL_TO:
