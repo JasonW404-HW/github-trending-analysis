@@ -1,6 +1,6 @@
-"""Pipeline 分层导出：contracts -> steps -> workflows。"""
+"""Pipeline 模块导出。"""
 
-from src.pipeline.contracts import (
+from src.pipeline.models import (
     AnalysisRunResult,
     AnalysisRunStats,
     PipelineRunResult,
@@ -8,15 +8,15 @@ from src.pipeline.contracts import (
     RepoSelectionResult,
     SummaryMap,
 )
-from src.pipeline.steps import (
-    RepositoryAnalysisStep,
+from src.pipeline.repository_analysis import RepositoryAnalysisStep, SummarizerFactory
+from src.pipeline.repository_selection import (
     build_repository_search_text,
     collect_keyword_matches,
     normalize_keywords,
     normalize_match_mode,
     select_repositories_for_analysis,
 )
-from src.pipeline.workflows import TrendingWorkflow
+from src.trending_workflow import TrendingWorkflow
 
 __all__ = [
     "AnalysisRunResult",
@@ -25,6 +25,7 @@ __all__ = [
     "RepoData",
     "RepoSelectionResult",
     "RepositoryAnalysisStep",
+    "SummarizerFactory",
     "SummaryMap",
     "TrendingWorkflow",
     "build_repository_search_text",

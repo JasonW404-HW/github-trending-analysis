@@ -3,7 +3,7 @@
 import hashlib
 from typing import Callable, List, Optional, Tuple
 
-from src.claude_summarizer import ClaudeSummarizer
+from src.analysis import RepositorySummarizer
 from src.config import (
     ANALYSIS_CUSTOM_PROMPT,
     FETCH_REQUEST_DELAY,
@@ -13,14 +13,14 @@ from src.config import (
     GITHUB_ACTIVITY_ISSUES_LIMIT,
     GITHUB_ACTIVITY_PRS_LIMIT,
     GITHUB_ACTIVITY_WINDOW_DAYS,
+    TOP_N_REPOS_FOR_LLM,
 )
-from src.database import Database
-from src.pipeline.contracts import AnalysisRunResult, AnalysisRunStats, RepoData, SummaryMap
-from src.readme_fetcher import ReadmeFetcher
-from src.repo_activity_fetcher import RepoActivityFetcher
+from src.infrastructure.database import Database
+from src.github import ReadmeFetcher, RepoActivityFetcher
+from src.pipeline.models import AnalysisRunResult, AnalysisRunStats, RepoData, SummaryMap
 
 
-SummarizerFactory = Callable[..., ClaudeSummarizer]
+SummarizerFactory = Callable[..., RepositorySummarizer]
 
 
 class RepositoryAnalysisStep:
@@ -44,7 +44,7 @@ class RepositoryAnalysisStep:
         self.db = db
         self.readme_fetcher = readme_fetcher or ReadmeFetcher()
         self.activity_fetcher = activity_fetcher or RepoActivityFetcher()
-        self.summarizer_factory = summarizer_factory or ClaudeSummarizer
+        self.summarizer_factory = summarizer_factory or RepositorySummarizer
         self.fetch_delay = FETCH_REQUEST_DELAY if fetch_delay is None else fetch_delay
         self.activity_window_days = max(
             1,
@@ -109,6 +109,19 @@ class RepositoryAnalysisStep:
 
         self._attach_recent_activity(pending_repos)
         self._attach_readme_summaries(pending_repos)
+
+        llm_target_repos = pending_repos[:TOP_N_REPOS_FOR_LLM]
+        if not llm_target_repos:
+            return AnalysisRunResult(
+                summary_map=summary_map,
+                stats=AnalysisRunStats(
+                    cached_count=cached_count,
+                    pending_count=0,
+                    success_count=0,
+                    fallback_count=0,
+                ),
+            )
+
         summarizer = self.summarizer_factory(extra_prompt=self.extra_prompt)
 
         def on_success(summary: RepoData) -> None:
@@ -119,7 +132,7 @@ class RepositoryAnalysisStep:
             if repo_name:
                 summary_map[repo_name] = summary
 
-        analyzed = summarizer.summarize_and_classify(pending_repos, on_success=on_success)
+        analyzed = summarizer.summarize_and_classify(llm_target_repos, on_success=on_success)
 
         success_count = 0
         fallback_count = 0
@@ -138,7 +151,7 @@ class RepositoryAnalysisStep:
             summary_map=summary_map,
             stats=AnalysisRunStats(
                 cached_count=cached_count,
-                pending_count=len(pending_repos),
+                pending_count=len(llm_target_repos),
                 success_count=success_count,
                 fallback_count=fallback_count,
             ),

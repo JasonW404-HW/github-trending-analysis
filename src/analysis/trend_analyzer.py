@@ -5,7 +5,7 @@ Trend Analyzer - 趋势计算引擎
 from typing import Dict, List
 from datetime import datetime, timedelta
 
-from src.database import Database
+from src.infrastructure.database import Database
 from src.config import SURGE_THRESHOLD
 
 

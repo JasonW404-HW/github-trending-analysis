@@ -2,11 +2,9 @@
 
 import traceback
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import List, Optional, Tuple
 from urllib.parse import urlparse
 
-from src.application.opportunity_report_builder import build_opportunity_report_markdown
 from src.config import (
     ANALYSIS_CUSTOM_PROMPT,
     ANALYSIS_KEYWORDS,
@@ -21,16 +19,16 @@ from src.config import (
     RESEND_API_KEY,
     RESEND_FROM_EMAIL,
     TOPIC,
-    TOP_N_DETAILS,
+    TOP_N_REPOS_FOR_DETAILS,
+    TOP_N_REPOS_FOR_LLM,
     MODEL,
 )
-from src.database import Database
-from src.email_reporter import EmailReporter
-from src.pipeline.contracts import AnalysisRunResult, RepoSelectionResult
-from src.pipeline.workflows import TrendingWorkflow
-from src.resend import ResendSender
+from src.infrastructure.database import Database
+from src.email import ResendSender
+from src.web import EmailReporter
+from src.pipeline import AnalysisRunResult, RepoSelectionResult, TrendingWorkflow
 from src.util.print_util import banner, logger
-from src.web_generator import WebGenerator
+from src.infrastructure.web_generator import WebGenerator
 
 
 def print_banner() -> None:
@@ -240,8 +238,14 @@ def run_daily_command() -> int:
         workflow.persist_snapshot(date=today, repos=today_repos)
         logger.info()
 
-        logger.info(f"[步骤 3/8] AI 分析 Top {TOP_N_DETAILS}（跳过已落库且未更新）...")
-        selection = workflow.select_analysis_targets(repos=today_repos, top_n=TOP_N_DETAILS)
+        logger.info(
+            f"[步骤 3/8] 详情抓取 Top {TOP_N_REPOS_FOR_DETAILS}，"
+            f"LLM 分析 Top {TOP_N_REPOS_FOR_LLM}（跳过已落库且未更新）..."
+        )
+        selection = workflow.select_analysis_targets(
+            repos=today_repos,
+            top_n=TOP_N_REPOS_FOR_DETAILS,
+        )
         print_selection_summary(selection)
         analysis = workflow.analyze_selected(selection)
         print_analysis_summary(analysis)
@@ -350,8 +354,14 @@ def run_fetch_only_command() -> int:
         workflow.persist_snapshot(date=today, repos=repos)
         logger.info()
 
-        logger.info(f"[步骤 3/3] AI 分析 Top {TOP_N_DETAILS}（跳过已落库且未更新）...")
-        selection = workflow.select_analysis_targets(repos=repos, top_n=TOP_N_DETAILS)
+        logger.info(
+            f"[步骤 3/3] 详情抓取 Top {TOP_N_REPOS_FOR_DETAILS}，"
+            f"LLM 分析 Top {TOP_N_REPOS_FOR_LLM}（跳过已落库且未更新）..."
+        )
+        selection = workflow.select_analysis_targets(
+            repos=repos,
+            top_n=TOP_N_REPOS_FOR_DETAILS,
+        )
         print_selection_summary(selection)
         analysis = workflow.analyze_selected(selection)
         print_analysis_summary(analysis)
@@ -525,13 +535,19 @@ def run_opportunity_report_command() -> int:
                 if opportunities:
                     logger.info(f"      机会点: {'；'.join(opportunities[:2])}")
 
-        report_content = build_opportunity_report_markdown(report)
-        report_dir = Path("data") / "reports"
-        report_dir.mkdir(parents=True, exist_ok=True)
-        report_path = report_dir / f"opportunity-report-{date}.md"
-        report_path.write_text(report_content, encoding="utf-8")
+        reporter = EmailReporter()
+        report_html = reporter.generate_email_html(
+            trends={"top_20": []},
+            date=date,
+            report=report,
+            single_repo_mode=False,
+        )
+        output_path = OUTPUT_DIR
+        web_gen = WebGenerator(output_path)
+        preview_path = web_gen.output_dir / "exports" / f"opportunity-report-{date}.html"
+        preview_path.write_text(report_html, encoding="utf-8")
         logger.info()
-        logger.info(f"✅ 报表已生成: {report_path}")
+        logger.info(f"✅ 报表预览已生成: {preview_path}")
         return 0
     except Exception as error:
         logger.error(f"\n[错误] 报表生成失败: {error}")

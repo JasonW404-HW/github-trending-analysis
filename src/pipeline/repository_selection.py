@@ -3,7 +3,7 @@
 from typing import List, Optional
 
 from src.config import ANALYSIS_KEYWORDS, ANALYSIS_KEYWORD_MATCH_MODE
-from src.pipeline.contracts import RepoData, RepoSelectionResult
+from src.pipeline.models import RepoData, RepoSelectionResult
 
 
 def build_repository_search_text(repo: RepoData) -> str:

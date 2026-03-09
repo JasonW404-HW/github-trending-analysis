@@ -5,7 +5,7 @@ Resend Sender - Resend 邮件发送
 import resend
 from typing import Any, Dict
 
-from src.retry_utils import execute_with_429_retry
+from src.util.retry_utils import execute_with_429_retry
 from src.util.print_util import logger
 
 

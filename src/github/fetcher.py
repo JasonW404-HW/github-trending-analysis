@@ -12,7 +12,7 @@ from src.config import (
     GITHUB_PER_PAGE, GITHUB_MAX_PAGES, GITHUB_SEARCH_SORT,
     GITHUB_SEARCH_ORDER, FETCH_REQUEST_DELAY, GITHUB_CACHE_MINUTES
 )
-from src.retry_utils import execute_with_429_retry
+from src.util.retry_utils import execute_with_429_retry
 from src.util.print_util import logger
 
 

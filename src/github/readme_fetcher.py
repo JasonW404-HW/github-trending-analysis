@@ -8,7 +8,7 @@ import requests
 from typing import Dict, List, Optional
 
 from src.config import GITHUB_TOKEN, GITHUB_API_BASE, FETCH_REQUEST_DELAY
-from src.retry_utils import execute_with_429_retry
+from src.util.retry_utils import execute_with_429_retry
 from src.util.print_util import logger
 
 

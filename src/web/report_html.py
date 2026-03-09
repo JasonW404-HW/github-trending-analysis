@@ -22,15 +22,14 @@ def _load_premailer_transform() -> Optional[Callable[..., object]]:
 
 PREMAILER_TRANSFORM = _load_premailer_transform()
 
-from src.config import PUSH_MIN_COMMERCIAL_LEVEL, TOPIC, format_number, get_theme
+from src.config import PUSH_MIN_COMMERCIAL_LEVEL, TOPIC, format_number
 from src.util.print_util import logger
 
 
 class EmailReporter:
     """生成 HTML 邮件报告"""
 
-    def __init__(self, theme: str = "blue"):
-        self.theme = get_theme(theme)
+    def __init__(self):
         self.topic = TOPIC
 
     def generate_email_html(
@@ -65,8 +64,8 @@ class EmailReporter:
                 keep_style_tags=False,
                 remove_classes=False,
                 strip_important=False,
-              disable_validation=True,
-              cssutils_logging_level="ERROR",
+                disable_validation=True,
+                cssutils_logging_level="ERROR",
             )
             return str(result)
         except Exception as error:
@@ -658,18 +657,3 @@ class EmailReporter:
     </div>"""
 
 
-def generate_email_html(
-    trends: Dict,
-    date: str,
-    theme: str = "blue",
-    report: Optional[Dict] = None,
-    single_repo_mode: bool = False,
-) -> str:
-    """便捷函数：生成邮件 HTML。"""
-    reporter = EmailReporter(theme)
-    return reporter.generate_email_html(
-        trends=trends,
-        date=date,
-        report=report,
-        single_repo_mode=single_repo_mode,
-    )

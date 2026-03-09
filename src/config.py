@@ -29,7 +29,7 @@ else:
 # GitHub API 配置
 # ============================================================================
 GITHUB_TOKEN = os.getenv("GH_TOKEN")
-TOPIC = os.getenv("TOPIC", "claude-code")
+TOPIC = os.getenv("TOPIC", "ai")
 GITHUB_API_BASE = "https://api.github.com"
 GITHUB_PER_PAGE = 100  # GitHub API max per page
 GITHUB_MAX_PAGES = 10  # Maximum pages to fetch (1000 repos)
@@ -111,7 +111,15 @@ SURGE_THRESHOLD = _get_env_float("SURGE_THRESHOLD", 0.3)  # 30% 暴涨阈值
 # ============================================================================
 # 采集配置
 # ============================================================================
-TOP_N_DETAILS = _get_env_positive_int("TOP_N_DETAILS", 50)  # AI 分析数量上限
+TOP_N_REPOS_FOR_DETAILS = _get_env_positive_int(
+    "TOP_N_REPOS_FOR_DETAILS",
+    2,
+)  # 先抓取 README/Issue/PR 详情的仓库数量上限
+TOP_N_REPOS_FOR_LLM = _get_env_positive_int(
+    "TOP_N_REPOS_FOR_LLM",
+    2,
+)  # 进入 LLM 深度分析的仓库数量上限
+TOP_N_DETAILS = TOP_N_REPOS_FOR_DETAILS  # 兼容旧变量
 FETCH_REQUEST_DELAY = 0.5  # API 请求间隔（秒）
 GITHUB_CACHE_MINUTES = _get_env_positive_int("GITHUB_CACHE_MINUTES", 30)
 GITHUB_ACTIVITY_WINDOW_DAYS = _get_env_positive_int("GITHUB_ACTIVITY_WINDOW_DAYS", 30)
@@ -154,7 +162,7 @@ CATEGORIES = {
         "name": "插件",
         "name_en": "Plugin",
         "icon": "🔌",
-        "description": "Claude Code / VS Code 插件"
+        "description": "AI / VS Code 插件"
     },
     "tool": {
         "name": "工具",

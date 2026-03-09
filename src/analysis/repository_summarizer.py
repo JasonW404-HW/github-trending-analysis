@@ -1,7 +1,4 @@
-"""
-Claude Summarizer - AI 总结和分类 GitHub 仓库
-使用 LiteLLM 对仓库进行分析、总结和分类
-"""
+"""Repository Summarizer - AI 总结和分类 GitHub 仓库。"""
 
 import json
 import ast
@@ -20,7 +17,7 @@ from src.config import (
     MODEL_MAX_CONCURRENCY,
     MODEL_MAX_RPM,
 )
-from src.retry_utils import execute_with_429_retry
+from src.util.retry_utils import execute_with_429_retry
 from src.util.model_util import litellm_completion, resolve_model_name
 from src.util.print_util import logger
 
@@ -60,7 +57,7 @@ class _RpmLimiter:
             time.sleep(wait_seconds)
 
 
-class ClaudeSummarizer:
+class RepositorySummarizer:
     """AI 总结和分类 GitHub 仓库"""
 
     def __init__(
@@ -936,5 +933,5 @@ README 摘要:
 
 def summarize_repos(repos: List[Dict]) -> List[Dict]:
     """便捷函数：总结和分类仓库"""
-    summarizer = ClaudeSummarizer()
+    summarizer = RepositorySummarizer()
     return summarizer.summarize_and_classify(repos)

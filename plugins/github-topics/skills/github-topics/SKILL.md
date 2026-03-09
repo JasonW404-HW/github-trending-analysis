@@ -35,7 +35,7 @@ uv run main.py --opportunity-report
 | 变量 | 说明 | 必需 |
 |------|------|------|
 | `GH_TOKEN` | GitHub Personal Access Token | 是 |
-| `TOPIC` | 要追踪的 GitHub Topic (默认: claude-code) | 否 |
+| `TOPIC` | 要追踪的 GitHub Topic (默认: ai) | 否 |
 | `MODEL_PROVIDER` | 模型供应商（如 MOONSHOT） | 是 |
 | `MODEL_TOKEN` | 模型供应商 API Token | 是 |
 | `MODEL_NAME` | 模型名称（如 moonshot/moonshot-v1-8k） | 是 |
@@ -57,7 +57,7 @@ uv run main.py --opportunity-report
 
 ## 仓库分类
 
-- **插件**: Claude Code / VS Code 插件
+- **插件**: AI / VS Code 插件
 - **工具**: 开发工具、CLI 工具
 - **模板**: 项目模板、脚手架
 - **文档**: 教程、文档、书籍
@@ -86,5 +86,5 @@ uv run main.py --opportunity-report
 
 ## 相关链接
 
-- GitHub: https://github.com/topics/claude-code
+- GitHub: https://github.com/topics/ai
 - API 文档: https://docs.github.com/en/rest

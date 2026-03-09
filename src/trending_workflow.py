@@ -6,13 +6,14 @@ from src.config import (
     ANALYSIS_KEYWORDS,
     ANALYSIS_KEYWORD_MATCH_MODE,
     GITHUB_CACHE_MINUTES,
-    TOP_N_DETAILS,
+    TOP_N_REPOS_FOR_DETAILS,
 )
-from src.database import Database
+from src.infrastructure.database import Database
 from src.github import GitHubFetcher
-from src.pipeline.contracts import AnalysisRunResult, PipelineRunResult, RepoData, RepoSelectionResult
-from src.pipeline.steps import RepositoryAnalysisStep, select_repositories_for_analysis
-from src.trend_analyzer import TrendAnalyzer
+from src.pipeline.models import AnalysisRunResult, PipelineRunResult, RepoData, RepoSelectionResult
+from src.pipeline.repository_analysis import RepositoryAnalysisStep
+from src.pipeline.repository_selection import select_repositories_for_analysis
+from src.analysis import TrendAnalyzer
 
 
 class TrendingWorkflow:
@@ -56,7 +57,7 @@ class TrendingWorkflow:
     def select_analysis_targets(
         self,
         repos: List[RepoData],
-        top_n: int = TOP_N_DETAILS,
+        top_n: int = TOP_N_REPOS_FOR_DETAILS,
     ) -> RepoSelectionResult:
         """按策略筛选待分析仓库。"""
         return select_repositories_for_analysis(
@@ -83,7 +84,7 @@ class TrendingWorkflow:
         self,
         date: str,
         fetch_limit: int = 100,
-        top_n: int = TOP_N_DETAILS,
+        top_n: int = TOP_N_REPOS_FOR_DETAILS,
     ) -> PipelineRunResult:
         """执行完整工作流。"""
         repos, cache_hit = self.fetch_rankings(date=date, limit=fetch_limit)

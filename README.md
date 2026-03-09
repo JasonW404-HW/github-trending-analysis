@@ -43,23 +43,24 @@
 
 ### 2) 应用层
 
-- `src/application/cli_app.py`：命令执行编排（full / fetch-only / opportunity-report）
-- `src/application/opportunity_report_builder.py`：机会报表 Markdown 构建
+- `src/cli_app.py`：命令执行编排（full / fetch-only / opportunity-report）
 
 ### 3) 流程层（Pipeline）
 
-- `src/pipeline/contracts`：运行契约（数据模型）
-- `src/pipeline/steps`：流程步骤（仓库筛选、仓库分析）
-- `src/pipeline/workflows`：端到端工作流编排（TrendingWorkflow）
+- `src/pipeline/models.py`：运行契约（数据模型）
+- `src/pipeline/repository_selection.py`：流程步骤（仓库筛选）
+- `src/pipeline/repository_analysis.py`：流程步骤（仓库分析）
+- `src/trending_workflow.py`：端到端工作流编排（TrendingWorkflow）
 
 ### 4) 基础设施层
 
-- `src/github.py`：GitHub API 采集
-- `src/readme_fetcher.py`：README 获取
-- `src/claude_summarizer.py`：LLM 分析
-- `src/database.py`：SQLite 数据访问
-- `src/email_reporter.py` / `src/resend.py`：邮件内容与发送
-- `src/web_generator.py`：静态网页生成
+- `src/github/fetcher.py`：GitHub API 采集
+- `src/github/readme_fetcher.py`：README 获取
+- `src/analysis/repository_summarizer.py`：LLM 分析
+- `src/analysis/trend_analyzer.py`：趋势分析
+- `src/infrastructure/database.py`：SQLite 数据访问
+- `src/email/reporter.py` / `src/email/sender.py`：邮件内容与发送
+- `src/infrastructure/web_generator.py`：静态网页生成
 
 ---
 
@@ -184,7 +185,7 @@ scripts/setup_ubuntu_cron.sh --uninstall
 | 变量                                   | 必需 | 说明                              |
 | -------------------------------------- | ---- | --------------------------------- |
 | `GH_TOKEN`                             | 是   | GitHub Token                      |
-| `TOPIC`                                | 否   | 追踪话题（默认 `claude-code`）    |
+| `TOPIC`                                | 否   | 追踪话题（默认 `ai`）             |
 | `MODEL`                                | 是   | 模型标识（格式 `provider/model`） |
 | `LLM_MAX_TOKENS`                       | 否   | 模型最大输出 token                |
 | `RESEND_API_KEY`                       | 是   | Resend API Key                    |
@@ -213,9 +214,9 @@ scripts/setup_ubuntu_cron.sh --uninstall
 ## 输出内容
 
 - 数据库：`data/github-trending.db`
-- 运营报表：`data/reports/opportunity-report-YYYY-MM-DD.md`
+- 报表预览：`docs/exports/opportunity-report-YYYY-MM-DD.html`
 - 网页输出：`docs/`
-- 导出文件：`docs/exports/opportunity-report-*.{json,csv,md}`
+- 导出文件：`docs/exports/opportunity-report-*.{json,csv}`
 
 ---
 
