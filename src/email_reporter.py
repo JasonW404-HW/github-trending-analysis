@@ -23,6 +23,7 @@ def _load_premailer_transform() -> Optional[Callable[..., object]]:
 PREMAILER_TRANSFORM = _load_premailer_transform()
 
 from src.config import PUSH_MIN_COMMERCIAL_LEVEL, TOPIC, format_number, get_theme
+from src.util.print_util import logger
 
 
 class EmailReporter:
@@ -69,7 +70,7 @@ class EmailReporter:
             )
             return str(result)
         except Exception as error:
-            print(f"⚠️ 邮件 CSS 内联失败，回退原始 HTML: {error}")
+            logger.warning(f"⚠️ 邮件 CSS 内联失败，回退原始 HTML: {error}")
             return html
 
     @staticmethod

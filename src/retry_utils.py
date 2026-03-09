@@ -7,6 +7,7 @@ from typing import Callable, TypeVar
 import requests
 
 from src.config import HTTP_429_COOLDOWN_SECONDS, HTTP_429_MAX_RETRIES
+from src.util.print_util import logger
 
 
 T = TypeVar("T")
@@ -60,7 +61,7 @@ def execute_with_429_retry(
                 raise
 
             attempt += 1
-            print(
+            logger.info(
                 f"⚠️ {context} 触发 429 限流，冷却 {cooldown_seconds} 秒后重试 "
                 f"({attempt}/{max_retries})"
             )

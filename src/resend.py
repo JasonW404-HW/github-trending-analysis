@@ -6,6 +6,7 @@ import resend
 from typing import Any, Dict
 
 from src.retry_utils import execute_with_429_retry
+from src.util.print_util import logger
 
 
 class ResendSender:
@@ -69,7 +70,7 @@ class ResendSender:
 
         try:
             recipients_text = ", ".join(recipients)
-            print(f"📧 正在发送邮件到: {recipients_text}")
+            logger.info(f"📧 正在发送邮件到: {recipients_text}")
 
             params: Any = {
                 "from": from_email,
@@ -83,7 +84,7 @@ class ResendSender:
                 context=f"Resend 发送邮件 {recipients_text}",
             )
 
-            print(f"✅ 邮件发送成功! ID: {response.get('id')}")
+            logger.info(f"✅ 邮件发送成功! ID: {response.get('id')}")
 
             return {
                 "success": True,
@@ -94,7 +95,7 @@ class ResendSender:
 
         except Exception as e:
             error_msg = str(e)
-            print(f"❌ 邮件发送失败: {error_msg}")
+            logger.error(f"❌ 邮件发送失败: {error_msg}")
 
             return {
                 "success": False,
@@ -129,7 +130,7 @@ class ResendSender:
 
         try:
             recipients_text = ", ".join(recipients)
-            print(f"📧 正在发送邮件到: {recipients_text}")
+            logger.info(f"📧 正在发送邮件到: {recipients_text}")
 
             params: Any = {
                 "from": from_email,
@@ -146,7 +147,7 @@ class ResendSender:
                 context=f"Resend 发送邮件 {recipients_text}",
             )
 
-            print(f"✅ 邮件发送成功! ID: {response.get('id')}")
+            logger.info(f"✅ 邮件发送成功! ID: {response.get('id')}")
 
             return {
                 "success": True,
@@ -157,7 +158,7 @@ class ResendSender:
 
         except Exception as e:
             error_msg = str(e)
-            print(f"❌ 邮件发送失败: {error_msg}")
+            logger.error(f"❌ 邮件发送失败: {error_msg}")
 
             return {
                 "success": False,

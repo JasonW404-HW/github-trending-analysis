@@ -90,13 +90,11 @@ cp .env.example .env
 编辑 `.env`，至少配置：
 
 - `GH_TOKEN`
-- `MODEL_PROVIDER`（例如 `MOONSHOT`）
-- `MODEL_TOKEN`
-- `MODEL_NAME`
+- `MODEL`（例如 `ollama/gemma3:4b`）
 - `RESEND_API_KEY`
 - `EMAIL_TO`（支持多个收件人，英文逗号分隔）
 
-`MODEL_PROVIDER` 的可选值与模型命名方式请参考：
+`MODEL` 的 provider/model 命名方式请参考：
 https://docs.litellm.ai/docs/providers
 
 示例：
@@ -183,34 +181,32 @@ scripts/setup_ubuntu_cron.sh --uninstall
 
 ## 关键配置
 
-| 变量                                   | 必需 | 说明                            |
-| -------------------------------------- | ---- | ------------------------------- |
-| `GH_TOKEN`                             | 是   | GitHub Token                    |
-| `TOPIC`                                | 否   | 追踪话题（默认 `claude-code`）  |
-| `MODEL_PROVIDER`                       | 是   | 模型供应商（如 `MOONSHOT`）     |
-| `MODEL_BASE_URL`                       | 否   | 供应商 Base URL（默认留空）     |
-| `MODEL_TOKEN`                          | 是   | 供应商 API Token                |
-| `MODEL_NAME`                           | 是   | 模型名（如 `moonshot/...`）     |
-| `LLM_MAX_TOKENS`                       | 否   | 模型最大输出 token              |
-| `RESEND_API_KEY`                       | 是   | Resend API Key                  |
-| `EMAIL_TO`                             | 是   | 收件人邮箱（多个用逗号分隔）    |
-| `TOP_N_DETAILS`                        | 否   | AI 分析项目上限（debug 可设 2） |
-| `LLM_JSON_REPAIR_RETRIES`              | 否   | JSON 解析失败后修复重试次数     |
-| `ANALYSIS_KEYWORDS`                    | 否   | 关键词筛选（逗号分隔）          |
-| `ANALYSIS_KEYWORD_MATCH_MODE`          | 否   | `any` / `all`                   |
-| `ANALYSIS_CUSTOM_PROMPT`               | 否   | 自定义分析提示词                |
-| `GITHUB_ACTIVITY_WINDOW_DAYS`          | 否   | 分析时纳入的 Issue/PR 窗口天数  |
-| `GITHUB_ACTIVITY_ISSUES_LIMIT`         | 否   | 每仓库纳入 Prompt 的 Issue 条数 |
-| `GITHUB_ACTIVITY_PRS_LIMIT`            | 否   | 每仓库纳入 Prompt 的 PR 条数    |
-| `GITHUB_ACTIVITY_DETAIL_ISSUES_LIMIT`  | 否   | 二阶段深挖的 Issue 条数         |
-| `GITHUB_ACTIVITY_DETAIL_PRS_LIMIT`     | 否   | 二阶段深挖的 PR 条数            |
-| `GITHUB_ACTIVITY_DETAIL_LAST_COMMENTS` | 否   | 二阶段每条保留的最后对话条数    |
-| `PUSH_MIN_COMMERCIAL_LEVEL`            | 否   | `strong` / `weak`               |
-| `GITHUB_CACHE_MINUTES`                 | 否   | 抓取缓存分钟数                  |
+| 变量                                   | 必需 | 说明                              |
+| -------------------------------------- | ---- | --------------------------------- |
+| `GH_TOKEN`                             | 是   | GitHub Token                      |
+| `TOPIC`                                | 否   | 追踪话题（默认 `claude-code`）    |
+| `MODEL`                                | 是   | 模型标识（格式 `provider/model`） |
+| `LLM_MAX_TOKENS`                       | 否   | 模型最大输出 token                |
+| `RESEND_API_KEY`                       | 是   | Resend API Key                    |
+| `EMAIL_TO`                             | 是   | 收件人邮箱（多个用逗号分隔）      |
+| `TOP_N_DETAILS`                        | 否   | AI 分析项目上限（debug 可设 2）   |
+| `LLM_JSON_REPAIR_RETRIES`              | 否   | JSON 解析失败后修复重试次数       |
+| `ANALYSIS_KEYWORDS`                    | 否   | 关键词筛选（逗号分隔）            |
+| `ANALYSIS_KEYWORD_MATCH_MODE`          | 否   | `any` / `all`                     |
+| `ANALYSIS_CUSTOM_PROMPT`               | 否   | 自定义分析提示词                  |
+| `GITHUB_ACTIVITY_WINDOW_DAYS`          | 否   | 分析时纳入的 Issue/PR 窗口天数    |
+| `GITHUB_ACTIVITY_ISSUES_LIMIT`         | 否   | 每仓库纳入 Prompt 的 Issue 条数   |
+| `GITHUB_ACTIVITY_PRS_LIMIT`            | 否   | 每仓库纳入 Prompt 的 PR 条数      |
+| `GITHUB_ACTIVITY_DETAIL_ISSUES_LIMIT`  | 否   | 二阶段深挖的 Issue 条数           |
+| `GITHUB_ACTIVITY_DETAIL_PRS_LIMIT`     | 否   | 二阶段深挖的 PR 条数              |
+| `GITHUB_ACTIVITY_DETAIL_LAST_COMMENTS` | 否   | 二阶段每条保留的最后对话条数      |
+| `PUSH_MIN_COMMERCIAL_LEVEL`            | 否   | `strong` / `weak`                 |
+| `GITHUB_CACHE_MINUTES`                 | 否   | 抓取缓存分钟数                    |
 
 运行时注入规则：
-- 会根据 `MODEL_PROVIDER` 自动注入 `os.environ[<PROVIDER>_API_KEY] = MODEL_TOKEN`。
-- 若设置了 `MODEL_BASE_URL`，会额外注入 `os.environ[<PROVIDER>_API_BASE] = MODEL_BASE_URL`。
+- 项目仅使用 `MODEL` 指定模型名，API Key 不再要求写入 `.env`。
+- 默认从系统环境变量读取 provider 对应密钥（例如 `OPENAI_API_KEY`、`OLLAMA_API_KEY` 等）。
+- 若未提供所需密钥，将由 LiteLLM 在运行时报错提示。
 
 ---
 

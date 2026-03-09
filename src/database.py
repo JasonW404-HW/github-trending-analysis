@@ -10,21 +10,23 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 
 from src.config import DB_PATH, DB_RETENTION_DAYS
+from src.util.print_util import logger
 
 
 class Database:
     """SQLite 数据库操作类"""
 
-    def __init__(self, db_path: str = None):
+    def __init__(self, db_path: str = DB_PATH):
         """
         初始化数据库连接
 
         Args:
             db_path: 数据库文件路径，默认使用配置中的路径
         """
-        self.db_path = db_path or DB_PATH
+        self.db_path = db_path
         self._ensure_db_dir()
-        self.conn = None
+        self.conn: Optional[sqlite3.Connection] = None
+        self.connect()
 
     def _ensure_db_dir(self):
         """确保数据库目录存在"""
@@ -36,6 +38,7 @@ class Database:
         if self.conn is None:
             self.conn = sqlite3.connect(self.db_path)
             self.conn.row_factory = sqlite3.Row  # 返回字典格式
+        return self.conn
 
     def close(self):
         """关闭数据库连接"""
@@ -66,7 +69,7 @@ class Database:
         cursor = self.conn.cursor()
         cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
         self.conn.commit()
-        print(f"🔧 数据库迁移: {table_name} 新增字段 {column_name}")
+        logger.info(f"🔧 数据库迁移: {table_name} 新增字段 {column_name}")
 
     def init_db(self) -> None:
         """初始化数据库表"""
@@ -159,7 +162,7 @@ class Database:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_history_date ON repos_history(date)")
 
         self.conn.commit()
-        print(f"✅ 数据库初始化完成: {self.db_path}")
+        logger.info(f"✅ 数据库初始化完成: {self.db_path}")
 
     def save_today_data(self, date: str, repos: List[Dict]) -> None:
         """
@@ -205,7 +208,7 @@ class Database:
             ))
 
         self.conn.commit()
-        print(f"✅ 保存今日数据: {len(repos)} 条记录")
+        logger.info(f"✅ 保存今日数据: {len(repos)} 条记录")
 
     def get_repos_by_date(self, date: str) -> List[Dict]:
         """
@@ -289,7 +292,7 @@ class Database:
 
         self.conn.commit()
         if verbose:
-            print(f"✅ 保存仓库详情: {len(details)} 条记录")
+            logger.info(f"✅ 保存仓库详情: {len(details)} 条记录")
 
     def save_repo_detail(self, detail: Dict, verbose: bool = False) -> None:
         """保存单条仓库详情（用于每次成功请求及时落库）"""
@@ -462,7 +465,7 @@ class Database:
         total_deleted = deleted_daily + deleted_history
 
         if total_deleted > 0:
-            print(f"🗑️ 清理过期数据: {total_deleted} 条记录 (早于 {cutoff_date})")
+            logger.info(f"🗑️ 清理过期数据: {total_deleted} 条记录 (早于 {cutoff_date})")
 
         return total_deleted
 

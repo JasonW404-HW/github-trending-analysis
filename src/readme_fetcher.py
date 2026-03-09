@@ -9,6 +9,7 @@ from typing import Dict, List, Optional
 
 from src.config import GITHUB_TOKEN, GITHUB_API_BASE, FETCH_REQUEST_DELAY
 from src.retry_utils import execute_with_429_retry
+from src.util.print_util import logger
 
 
 class ReadmeFetcher:
@@ -76,7 +77,7 @@ class ReadmeFetcher:
                 return data.get("content", "")
 
         except requests.RequestException as e:
-            print(f"   ⚠️ 获取 README 失败 {owner}/{repo}: {e}")
+            logger.warning(f"   ⚠️ 获取 README 失败 {owner}/{repo}: {e}")
             return None
 
     def _request_with_retry(
@@ -178,7 +179,7 @@ class ReadmeFetcher:
         delay = delay if delay is not None else self.delay
         summaries = {}
 
-        print(f"📥 开始批量获取 README...")
+        logger.info(f"📥 开始批量获取 README...")
 
         for i, repo in enumerate(repos, 1):
             repo_name = repo.get("repo_name") or repo.get("name", "")
@@ -188,7 +189,7 @@ class ReadmeFetcher:
 
             owner, name = repo_name.split("/", 1)
 
-            print(f"  [{i}/{len(repos)}] {repo_name}")
+            logger.info(f"  [{i}/{len(repos)}] {repo_name}")
 
             summary = self.fetch_readme_summary(owner, name)
             if summary:
@@ -198,7 +199,7 @@ class ReadmeFetcher:
             if i < len(repos):
                 time.sleep(delay)
 
-        print(f"✅ 成功获取 {len(summaries)} 个 README 摘要")
+        logger.info(f"✅ 成功获取 {len(summaries)} 个 README 摘要")
         return summaries
 
     def fetch_from_github_raw(self, owner: str, repo: str, branch: str = "main") -> Optional[str]:

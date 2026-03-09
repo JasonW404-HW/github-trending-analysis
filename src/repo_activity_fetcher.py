@@ -8,6 +8,7 @@ import requests
 
 from src.config import FETCH_REQUEST_DELAY, GITHUB_API_BASE, GITHUB_TOKEN
 from src.retry_utils import execute_with_429_retry
+from src.util.print_util import logger
 
 
 class RepoActivityFetcher:
@@ -145,7 +146,7 @@ class RepoActivityFetcher:
             response.raise_for_status()
             payload = response.json()
         except requests.RequestException as error:
-            print(f"   ⚠️ 获取评论失败 {owner}/{repo}#{issue_number}: {error}")
+            logger.warning(f"   ⚠️ 获取评论失败 {owner}/{repo}#{issue_number}: {error}")
             return []
 
         if not isinstance(payload, list):
@@ -230,7 +231,7 @@ class RepoActivityFetcher:
             response.raise_for_status()
             payload = response.json()
         except requests.RequestException as error:
-            print(f"   ⚠️ 获取活动失败 {owner}/{repo}: {error}")
+            logger.warning(f"   ⚠️ 获取活动失败 {owner}/{repo}: {error}")
             return {
                 "window_days": bounded_window,
                 "issues": [],
@@ -325,7 +326,7 @@ class RepoActivityFetcher:
         delay = self.delay if delay is None else delay
         activities: Dict[str, Dict[str, object]] = {}
 
-        print(f"📥 开始批量获取近 {max(1, int(window_days))} 天 Issue/PR 活动...")
+        logger.info(f"📥 开始批量获取近 {max(1, int(window_days))} 天 Issue/PR 活动...")
 
         for index, repo in enumerate(repos, 1):
             repo_name = repo.get("repo_name") or repo.get("name", "")
@@ -333,7 +334,7 @@ class RepoActivityFetcher:
                 continue
 
             owner, repo_name_only = repo_name.split("/", 1)
-            print(f"  [{index}/{len(repos)}] {repo_name}")
+            logger.info(f"  [{index}/{len(repos)}] {repo_name}")
 
             activity = self.fetch_recent_activity(
                 owner=owner,
@@ -350,7 +351,7 @@ class RepoActivityFetcher:
             if index < len(repos):
                 time.sleep(delay)
 
-        print(f"✅ 成功获取 {len(activities)} 个仓库的活动摘要")
+        logger.info(f"✅ 成功获取 {len(activities)} 个仓库的活动摘要")
         return activities
 
 

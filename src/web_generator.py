@@ -20,6 +20,7 @@ from src.config import (
     format_number,
     get_theme,
 )
+from src.util.print_util import logger
 
 
 class WebGenerator:
@@ -63,9 +64,9 @@ class WebGenerator:
             生成的文件路径列表
         """
         if self.base_path:
-            print(f"🌐 GitHub Pages Base Path: {self.base_path}")
+            logger.info(f"🌐 GitHub Pages Base Path: {self.base_path}")
         else:
-            print("🌐 GitHub Pages Base Path: /")
+            logger.info("🌐 GitHub Pages Base Path: /")
 
         files = []
 
@@ -104,7 +105,7 @@ class WebGenerator:
         css_path = self.generate_css()
         files.append(css_path)
 
-        print(f"✅ 生成网站文件: {len(files)} 个")
+        logger.info(f"✅ 生成网站文件: {len(files)} 个")
 
         return files
 

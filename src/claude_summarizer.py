@@ -12,20 +12,17 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Deque, Dict, List, Optional, Tuple
 
-from litellm import completion
-
 from src.config import (
     ANALYSIS_CUSTOM_PROMPT,
-    MODEL_BASE_URL,
     CATEGORIES,
     LLM_MAX_TOKENS,
-    MODEL_NAME,
     LLM_JSON_REPAIR_RETRIES,
-    MODEL_TOKEN,
     MODEL_MAX_CONCURRENCY,
     MODEL_MAX_RPM,
 )
 from src.retry_utils import execute_with_429_retry
+from src.util.model_util import litellm_completion, resolve_model_name
+from src.util.print_util import logger
 
 
 def get_category_list() -> Dict[str, str]:
@@ -85,9 +82,9 @@ class ClaudeSummarizer:
             max_rpm: 每分钟最大请求数
             extra_prompt: 自定义分析提示词（来自配置）
         """
-        self.api_key = api_key or MODEL_TOKEN
-        self.base_url = base_url if base_url is not None else MODEL_BASE_URL
-        self.model = MODEL_NAME
+        self.api_key = api_key
+        self.base_url = base_url
+        self.model = resolve_model_name()
         self.max_tokens = LLM_MAX_TOKENS
         self.max_concurrency = max(1, max_concurrency or MODEL_MAX_CONCURRENCY)
         self.max_rpm = max(1, max_rpm or MODEL_MAX_RPM)
@@ -98,25 +95,10 @@ class ClaudeSummarizer:
         self.extra_prompt = (extra_prompt if extra_prompt is not None else ANALYSIS_CUSTOM_PROMPT).strip()
         self._rpm_limiter = _RpmLimiter(self.max_rpm)
 
-        if not self.model:
-            raise ValueError("MODEL_NAME 环境变量未设置")
-
         try:
-            print("✅ LiteLLM 客户端初始化成功")
+            logger.info("✅ LiteLLM 客户端初始化成功")
         except Exception as error:
             raise Exception(f"LiteLLM 客户端初始化失败: {error}")
-
-    def _build_completion_options(self) -> Dict:
-        """构建 LiteLLM completion 的可选参数。"""
-        options: Dict[str, object] = {}
-        if self.api_key:
-            options["api_key"] = self.api_key
-
-        base_url = str(self.base_url or "").strip()
-        if base_url:
-            options["base_url"] = base_url
-
-        return options
 
     def summarize_and_classify(
         self,
@@ -136,7 +118,7 @@ class ClaudeSummarizer:
         if not repos:
             return []
 
-        print(
+        logger.info(
             f"🤖 正在分析 {len(repos)} 个仓库 "
             f"(并发={self.max_concurrency}, RPM={self.max_rpm})..."
         )
@@ -156,7 +138,7 @@ class ClaudeSummarizer:
                 try:
                     result = future.result()
                 except Exception as error:
-                    print(f"❌ 分析异常 {repo_name}: {error}")
+                    logger.error(f"❌ 分析异常 {repo_name}: {error}")
                     result = None
 
                 if result:
@@ -175,7 +157,7 @@ class ClaudeSummarizer:
 
         success_count = len([result for result in ordered_results if not result.get("fallback")])
         fallback_count = len(ordered_results) - success_count
-        print(f"✅ AI 分析完成: 成功 {success_count}，降级 {fallback_count}")
+        logger.info(f"✅ AI 分析完成: 成功 {success_count}，降级 {fallback_count}")
 
         return ordered_results
 
@@ -188,8 +170,9 @@ class ClaudeSummarizer:
 
         try:
             response = execute_with_429_retry(
-                operation=lambda: completion(
+                operation=lambda: litellm_completion(
                     model=self.model,
+                    api_key=self.api_key,
                     max_tokens=self.max_tokens,
                     temperature=0.3,
                     messages=[
@@ -198,7 +181,6 @@ class ClaudeSummarizer:
                             "content": prompt,
                         }
                     ],
-                    **self._build_completion_options(),
                 ),
                 context=f"LLM 分析 {repo_name}",
             )
@@ -230,16 +212,16 @@ class ClaudeSummarizer:
                     log_error=False,
                 )
                 if repaired:
-                    print(f"♻️ JSON 修复成功 {repo_name} (attempt={attempt})")
+                    logger.info(f"♻️ JSON 修复成功 {repo_name} (attempt={attempt})")
                     return repaired
 
                 repair_source = repaired_text
 
-            print(f"❌ JSON 修复失败 {repo_name}")
+            logger.error(f"❌ JSON 修复失败 {repo_name}")
             return None
 
         except Exception as error:
-            print(f"❌ LLM API 调用失败 {repo_name}: {error}")
+            logger.error(f"❌ LLM API 调用失败 {repo_name}: {error}")
             return None
 
     @staticmethod
@@ -446,8 +428,9 @@ class ClaudeSummarizer:
 
         try:
             response = execute_with_429_retry(
-                operation=lambda: completion(
+                operation=lambda: litellm_completion(
                     model=self.model,
+                    api_key=self.api_key,
                     max_tokens=min(self.max_tokens, 2048),
                     temperature=0,
                     messages=[
@@ -456,12 +439,11 @@ class ClaudeSummarizer:
                             "content": prompt,
                         }
                     ],
-                    **self._build_completion_options(),
                 ),
                 context=f"LLM JSON 修复 {repo_name} (attempt={attempt})",
             )
         except Exception as error:
-            print(f"⚠️ JSON 修复请求失败 {repo_name}: {error}")
+            logger.warning(f"⚠️ JSON 修复请求失败 {repo_name}: {error}")
             return ""
 
         return self._extract_response_text(response)
@@ -808,8 +790,8 @@ README 摘要:
             if log_error:
                 repo_name = original_repo.get("repo_name") or original_repo.get("name", "unknown")
                 cleaned = self._clean_json_text(result_text)
-                print(f"❌ JSON 解析失败 {repo_name}: {parse_error}")
-                print(f"   原始响应: {cleaned[:400]}...")
+                logger.error(f"❌ JSON 解析失败 {repo_name}: {parse_error}")
+                logger.info(f"   原始响应: {cleaned[:400]}...")
             return None
 
         if isinstance(parsed, list):
