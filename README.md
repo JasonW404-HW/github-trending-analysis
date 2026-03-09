@@ -31,7 +31,7 @@
 - LLM 智能分析：结构化输出摘要、分类、标签、purpose_assessment
 - 趋势计算：新晋、跌出、活跃、星标增长、暴涨检测
 - 多渠道输出：HTML 邮件、GitHub Pages 页面、JSON/CSV/Markdown 报表
-- 数据持久化：SQLite 存储快照、历史、分析详情
+- 数据持久化：支持 SQLite / PostgreSQL，存储快照、历史、分析详情
 
 ---
 
@@ -58,7 +58,7 @@
 - `src/github/readme_fetcher.py`：README 获取
 - `src/analysis/repository_summarizer.py`：LLM 分析
 - `src/analysis/trend_analyzer.py`：趋势分析
-- `src/infrastructure/database.py`：SQLite 数据访问
+- `src/infrastructure/database.py`：SQLite / PostgreSQL 数据访问
 - `src/email/reporter.py` / `src/email/sender.py`：邮件内容与发送
 - `src/infrastructure/web_generator.py`：静态网页生成
 
@@ -182,27 +182,35 @@ scripts/setup_ubuntu_cron.sh --uninstall
 
 ## 关键配置
 
-| 变量                                   | 必需 | 说明                              |
-| -------------------------------------- | ---- | --------------------------------- |
-| `GH_TOKEN`                             | 是   | GitHub Token                      |
-| `TOPIC`                                | 否   | 追踪话题（默认 `ai`）             |
-| `MODEL`                                | 是   | 模型标识（格式 `provider/model`） |
-| `LLM_MAX_TOKENS`                       | 否   | 模型最大输出 token                |
-| `RESEND_API_KEY`                       | 是   | Resend API Key                    |
-| `EMAIL_TO`                             | 是   | 收件人邮箱（多个用逗号分隔）      |
-| `TOP_N_DETAILS`                        | 否   | AI 分析项目上限（debug 可设 2）   |
-| `LLM_JSON_REPAIR_RETRIES`              | 否   | JSON 解析失败后修复重试次数       |
-| `ANALYSIS_KEYWORDS`                    | 否   | 关键词筛选（逗号分隔）            |
-| `ANALYSIS_KEYWORD_MATCH_MODE`          | 否   | `any` / `all`                     |
-| `ANALYSIS_CUSTOM_PROMPT`               | 否   | 自定义分析提示词                  |
-| `GITHUB_ACTIVITY_WINDOW_DAYS`          | 否   | 分析时纳入的 Issue/PR 窗口天数    |
-| `GITHUB_ACTIVITY_ISSUES_LIMIT`         | 否   | 每仓库纳入 Prompt 的 Issue 条数   |
-| `GITHUB_ACTIVITY_PRS_LIMIT`            | 否   | 每仓库纳入 Prompt 的 PR 条数      |
-| `GITHUB_ACTIVITY_DETAIL_ISSUES_LIMIT`  | 否   | 二阶段深挖的 Issue 条数           |
-| `GITHUB_ACTIVITY_DETAIL_PRS_LIMIT`     | 否   | 二阶段深挖的 PR 条数              |
-| `GITHUB_ACTIVITY_DETAIL_LAST_COMMENTS` | 否   | 二阶段每条保留的最后对话条数      |
-| `PUSH_MIN_COMMERCIAL_LEVEL`            | 否   | `strong` / `weak`                 |
-| `GITHUB_CACHE_MINUTES`                 | 否   | 抓取缓存分钟数                    |
+| 变量                                   | 必需 | 说明                                 |
+| -------------------------------------- | ---- | ------------------------------------ |
+| `GH_TOKEN`                             | 是   | GitHub Token                         |
+| `TOPIC`                                | 否   | 追踪话题（默认 `ai`）                |
+| `MODEL`                                | 是   | 模型标识（格式 `provider/model`）    |
+| `LLM_MAX_TOKENS`                       | 否   | 模型最大输出 token                   |
+| `RESEND_API_KEY`                       | 是   | Resend API Key                       |
+| `EMAIL_TO`                             | 是   | 收件人邮箱（多个用逗号分隔）         |
+| `TOP_N_DETAILS`                        | 否   | AI 分析项目上限（debug 可设 2）      |
+| `LLM_JSON_REPAIR_RETRIES`              | 否   | JSON 解析失败后修复重试次数          |
+| `ANALYSIS_KEYWORDS`                    | 否   | 关键词筛选（逗号分隔）               |
+| `ANALYSIS_KEYWORD_MATCH_MODE`          | 否   | `any` / `all`                        |
+| `ANALYSIS_CUSTOM_PROMPT`               | 否   | 自定义分析提示词                     |
+| `GITHUB_ACTIVITY_WINDOW_DAYS`          | 否   | 分析时纳入的 Issue/PR 窗口天数       |
+| `GITHUB_ACTIVITY_ISSUES_LIMIT`         | 否   | 每仓库纳入 Prompt 的 Issue 条数      |
+| `GITHUB_ACTIVITY_PRS_LIMIT`            | 否   | 每仓库纳入 Prompt 的 PR 条数         |
+| `GITHUB_ACTIVITY_DETAIL_ISSUES_LIMIT`  | 否   | 二阶段深挖的 Issue 条数              |
+| `GITHUB_ACTIVITY_DETAIL_PRS_LIMIT`     | 否   | 二阶段深挖的 PR 条数                 |
+| `GITHUB_ACTIVITY_DETAIL_LAST_COMMENTS` | 否   | 二阶段每条保留的最后对话条数         |
+| `PUSH_MIN_COMMERCIAL_LEVEL`            | 否   | `strong` / `weak`                    |
+| `GITHUB_CACHE_MINUTES`                 | 否   | 抓取缓存分钟数                       |
+| `DB_BACKEND`                           | 否   | `sqlite` / `postgres`（默认 sqlite） |
+| `DB_PATH`                              | 否   | SQLite 文件路径                      |
+| `PG_HOST`                              | 否   | PostgreSQL 主机（默认 `localhost`）  |
+| `PG_PORT`                              | 否   | PostgreSQL 端口（默认 `5432`）       |
+| `PG_DATABASE`                          | 否   | PostgreSQL 数据库名                  |
+| `PG_USER`                              | 否   | PostgreSQL 用户名                    |
+| `PG_PASSWORD`                          | 否   | PostgreSQL 密码                      |
+| `DATABASE_URL`                         | 否   | PostgreSQL DSN（优先于 `PG_*`）      |
 
 运行时注入规则：
 - 项目仅使用 `MODEL` 指定模型名，API Key 不再要求写入 `.env`。
@@ -213,7 +221,7 @@ scripts/setup_ubuntu_cron.sh --uninstall
 
 ## 输出内容
 
-- 数据库：`data/github-trending.db`
+- 数据库：SQLite 默认 `data/github-trending.db`；PostgreSQL 由 `PG_*` 或 `DATABASE_URL` 决定
 - 报表预览：`docs/exports/opportunity-report-YYYY-MM-DD.html`
 - 网页输出：`docs/`
 - 导出文件：`docs/exports/opportunity-report-*.{json,csv}`

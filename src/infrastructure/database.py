@@ -1,5 +1,5 @@
 """
-SQLite 数据库操作模块
+数据库操作模块
 管理 GitHub 仓库趋势数据的存储和查询
 """
 import os
@@ -8,25 +8,106 @@ import json
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Any
+from urllib.parse import quote_plus
 
-from src.config import DB_PATH, DB_RETENTION_DAYS
+try:
+    import psycopg
+    from psycopg.rows import dict_row
+except ImportError:
+    psycopg = None
+    dict_row = None
+
+from src.config import (
+    DATABASE_URL,
+    DB_BACKEND,
+    DB_PATH,
+    DB_RETENTION_DAYS,
+    PG_DATABASE,
+    PG_HOST,
+    PG_PASSWORD,
+    PG_PORT,
+    PG_SSLMODE,
+    PG_USER,
+)
 from src.util.print_util import logger
 
 
-class Database:
-    """SQLite 数据库操作类"""
+class _PostgresCompatCursor:
+    """将 qmark 占位符转换为 psycopg 的 pyformat 占位符。"""
 
-    def __init__(self, db_path: str = DB_PATH):
+    def __init__(self, raw_cursor: Any):
+        self._raw_cursor = raw_cursor
+
+    def execute(self, query: str, params: tuple = ()):
+        normalized_query = query.replace("?", "%s")
+        self._raw_cursor.execute(normalized_query, params)
+        return self
+
+    def fetchone(self):
+        return self._raw_cursor.fetchone()
+
+    def fetchall(self):
+        return self._raw_cursor.fetchall()
+
+    @property
+    def rowcount(self):
+        return self._raw_cursor.rowcount
+
+
+class _PostgresCompatConnection:
+    """为 psycopg 连接提供 sqlite 风格 cursor 行为。"""
+
+    def __init__(self, raw_conn: Any):
+        self._raw_conn = raw_conn
+
+    def cursor(self):
+        return _PostgresCompatCursor(self._raw_conn.cursor())
+
+    def commit(self):
+        self._raw_conn.commit()
+
+    def close(self):
+        self._raw_conn.close()
+
+
+class Database:
+    """数据库操作类（支持 SQLite / PostgreSQL）"""
+
+    def __init__(
+        self,
+        db_path: str = DB_PATH,
+        backend: str = DB_BACKEND,
+        database_url: str = DATABASE_URL,
+    ):
         """
         初始化数据库连接
 
         Args:
-            db_path: 数据库文件路径，默认使用配置中的路径
+            db_path: SQLite 数据库文件路径，默认使用配置中的路径
+            backend: 数据库后端，sqlite/postgres
+            database_url: PostgreSQL DSN，优先级高于 PG_* 配置
         """
         self.db_path = db_path
-        self._ensure_db_dir()
-        self.conn: Optional[sqlite3.Connection] = None
+        self.backend = (backend or "sqlite").strip().lower()
+        if self.backend not in {"sqlite", "postgres"}:
+            self.backend = "sqlite"
+
+        self.database_url = (database_url or "").strip() or self._build_postgres_dsn()
+
+        if self.backend == "sqlite":
+            self._ensure_db_dir()
+
+        self.conn: Optional[Any] = None
         self.connect()
+
+    @staticmethod
+    def _build_postgres_dsn() -> str:
+        """构造 PostgreSQL DSN。"""
+        user = quote_plus(PG_USER or "")
+        password = quote_plus(PG_PASSWORD or "")
+        host = PG_HOST or "localhost"
+        db_name = PG_DATABASE or "github_trend_analysis"
+        return f"postgresql://{user}:{password}@{host}:{PG_PORT}/{db_name}?sslmode={PG_SSLMODE}"
 
     def _ensure_db_dir(self):
         """确保数据库目录存在"""
@@ -36,8 +117,14 @@ class Database:
     def connect(self):
         """建立数据库连接"""
         if self.conn is None:
-            self.conn = sqlite3.connect(self.db_path)
-            self.conn.row_factory = sqlite3.Row  # 返回字典格式
+            if self.backend == "postgres":
+                if psycopg is None:
+                    raise RuntimeError("未安装 psycopg，请先安装 PostgreSQL 驱动依赖")
+                raw_conn = psycopg.connect(self.database_url, row_factory=dict_row)
+                self.conn = _PostgresCompatConnection(raw_conn)
+            else:
+                self.conn = sqlite3.connect(self.db_path)
+                self.conn.row_factory = sqlite3.Row  # 返回字典格式
         return self.conn
 
     def close(self):
@@ -57,6 +144,18 @@ class Database:
         """获取表字段列表"""
         self.connect()
         cursor = self.conn.cursor()
+        if self.backend == "postgres":
+            cursor.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = ?
+                ORDER BY ordinal_position
+                """,
+                (table_name,),
+            )
+            return [row["column_name"] for row in cursor.fetchall()]
+
         cursor.execute(f"PRAGMA table_info({table_name})")
         return [row["name"] for row in cursor.fetchall()]
 
@@ -76,73 +175,138 @@ class Database:
         self.connect()
         cursor = self.conn.cursor()
 
-        # 1. repos_daily - 每日快照表
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS repos_daily (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                date TEXT NOT NULL,
-                rank INTEGER NOT NULL,
-                repo_name TEXT NOT NULL,
-                owner TEXT NOT NULL,
-                stars INTEGER NOT NULL,
-                stars_delta INTEGER DEFAULT 0,
-                forks INTEGER,
-                issues INTEGER,
-                language TEXT,
-                url TEXT,
-                repo_updated_at TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(date, repo_name)
-            )
-        """)
+        if self.backend == "postgres":
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS repos_daily (
+                    id BIGSERIAL PRIMARY KEY,
+                    date DATE NOT NULL,
+                    rank INTEGER NOT NULL,
+                    repo_name TEXT NOT NULL,
+                    owner TEXT NOT NULL,
+                    stars INTEGER NOT NULL,
+                    stars_delta INTEGER DEFAULT 0,
+                    forks INTEGER,
+                    issues INTEGER,
+                    language TEXT,
+                    url TEXT,
+                    repo_updated_at TEXT,
+                    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(date, repo_name)
+                )
+            """)
 
-        # 2. repos_details - 仓库详情缓存表
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS repos_details (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                repo_name TEXT UNIQUE NOT NULL,
-                summary TEXT NOT NULL,
-                description TEXT,
-                use_case TEXT,
-                solves TEXT,
-                tags TEXT,
-                purpose_assessment TEXT,
-                category TEXT NOT NULL,
-                category_zh TEXT NOT NULL,
-                topics TEXT,
-                language TEXT,
-                readme_summary TEXT,
-                owner TEXT NOT NULL,
-                url TEXT NOT NULL,
-                repo_updated_at TEXT,
-                prompt_hash TEXT,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS repos_details (
+                    id BIGSERIAL PRIMARY KEY,
+                    repo_name TEXT UNIQUE NOT NULL,
+                    summary TEXT NOT NULL,
+                    description TEXT,
+                    use_case TEXT,
+                    solves TEXT,
+                    tags TEXT,
+                    purpose_assessment TEXT,
+                    category TEXT NOT NULL,
+                    category_zh TEXT NOT NULL,
+                    topics TEXT,
+                    language TEXT,
+                    readme_summary TEXT,
+                    owner TEXT NOT NULL,
+                    url TEXT NOT NULL,
+                    repo_updated_at TEXT,
+                    prompt_hash TEXT,
+                    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
 
-        # 3. repos_history - 历史趋势表
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS repos_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                repo_name TEXT NOT NULL,
-                date TEXT NOT NULL,
-                rank INTEGER NOT NULL,
-                stars INTEGER NOT NULL,
-                forks INTEGER,
-                UNIQUE(repo_name, date)
-            )
-        """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS repos_history (
+                    id BIGSERIAL PRIMARY KEY,
+                    repo_name TEXT NOT NULL,
+                    date DATE NOT NULL,
+                    rank INTEGER NOT NULL,
+                    stars INTEGER NOT NULL,
+                    forks INTEGER,
+                    UNIQUE(repo_name, date)
+                )
+            """)
 
-        # 4. github_fetch_state - GitHub 抓取状态缓存
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS github_fetch_state (
-                request_key TEXT PRIMARY KEY,
-                etag TEXT,
-                last_checked_at TEXT,
-                last_success_at TEXT,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS github_fetch_state (
+                    request_key TEXT PRIMARY KEY,
+                    etag TEXT,
+                    last_checked_at TEXT,
+                    last_success_at TEXT,
+                    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+        else:
+            # 1. repos_daily - 每日快照表
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS repos_daily (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    date TEXT NOT NULL,
+                    rank INTEGER NOT NULL,
+                    repo_name TEXT NOT NULL,
+                    owner TEXT NOT NULL,
+                    stars INTEGER NOT NULL,
+                    stars_delta INTEGER DEFAULT 0,
+                    forks INTEGER,
+                    issues INTEGER,
+                    language TEXT,
+                    url TEXT,
+                    repo_updated_at TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(date, repo_name)
+                )
+            """)
+
+            # 2. repos_details - 仓库详情缓存表
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS repos_details (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    repo_name TEXT UNIQUE NOT NULL,
+                    summary TEXT NOT NULL,
+                    description TEXT,
+                    use_case TEXT,
+                    solves TEXT,
+                    tags TEXT,
+                    purpose_assessment TEXT,
+                    category TEXT NOT NULL,
+                    category_zh TEXT NOT NULL,
+                    topics TEXT,
+                    language TEXT,
+                    readme_summary TEXT,
+                    owner TEXT NOT NULL,
+                    url TEXT NOT NULL,
+                    repo_updated_at TEXT,
+                    prompt_hash TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # 3. repos_history - 历史趋势表
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS repos_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    repo_name TEXT NOT NULL,
+                    date TEXT NOT NULL,
+                    rank INTEGER NOT NULL,
+                    stars INTEGER NOT NULL,
+                    forks INTEGER,
+                    UNIQUE(repo_name, date)
+                )
+            """)
+
+            # 4. github_fetch_state - GitHub 抓取状态缓存
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS github_fetch_state (
+                    request_key TEXT PRIMARY KEY,
+                    etag TEXT,
+                    last_checked_at TEXT,
+                    last_success_at TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
 
         # 兼容旧库：补充新增字段
         self._ensure_column("repos_daily", "repo_updated_at", "TEXT")
@@ -162,7 +326,8 @@ class Database:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_history_date ON repos_history(date)")
 
         self.conn.commit()
-        logger.info(f"✅ 数据库初始化完成: {self.db_path}")
+        db_target = self.database_url if self.backend == "postgres" else self.db_path
+        logger.info(f"✅ 数据库初始化完成 ({self.backend}): {db_target}")
 
     def save_today_data(self, date: str, repos: List[Dict]) -> None:
         """
@@ -176,36 +341,94 @@ class Database:
         cursor = self.conn.cursor()
 
         for repo in repos:
-            cursor.execute("""
-                INSERT OR REPLACE INTO repos_daily
-                (date, rank, repo_name, owner, stars, stars_delta, forks, issues, language, url, repo_updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                date,
-                repo.get("rank"),
-                repo.get("repo_name"),
-                repo.get("owner"),
-                repo.get("stars"),
-                repo.get("stars_delta", 0),
-                repo.get("forks"),
-                repo.get("issues"),
-                repo.get("language"),
-                repo.get("url", ""),
-                repo.get("updated_at", "")
-            ))
+            if self.backend == "postgres":
+                cursor.execute(
+                    """
+                    INSERT INTO repos_daily
+                    (date, rank, repo_name, owner, stars, stars_delta, forks, issues, language, url, repo_updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(date, repo_name) DO UPDATE SET
+                        rank = EXCLUDED.rank,
+                        owner = EXCLUDED.owner,
+                        stars = EXCLUDED.stars,
+                        stars_delta = EXCLUDED.stars_delta,
+                        forks = EXCLUDED.forks,
+                        issues = EXCLUDED.issues,
+                        language = EXCLUDED.language,
+                        url = EXCLUDED.url,
+                        repo_updated_at = EXCLUDED.repo_updated_at
+                    """,
+                    (
+                        date,
+                        repo.get("rank"),
+                        repo.get("repo_name"),
+                        repo.get("owner"),
+                        repo.get("stars"),
+                        repo.get("stars_delta", 0),
+                        repo.get("forks"),
+                        repo.get("issues"),
+                        repo.get("language"),
+                        repo.get("url", ""),
+                        repo.get("updated_at", ""),
+                    ),
+                )
+            else:
+                cursor.execute(
+                    """
+                    INSERT OR REPLACE INTO repos_daily
+                    (date, rank, repo_name, owner, stars, stars_delta, forks, issues, language, url, repo_updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        date,
+                        repo.get("rank"),
+                        repo.get("repo_name"),
+                        repo.get("owner"),
+                        repo.get("stars"),
+                        repo.get("stars_delta", 0),
+                        repo.get("forks"),
+                        repo.get("issues"),
+                        repo.get("language"),
+                        repo.get("url", ""),
+                        repo.get("updated_at", ""),
+                    ),
+                )
 
             # 同时写入历史表
-            cursor.execute("""
-                INSERT OR REPLACE INTO repos_history
-                (repo_name, date, rank, stars, forks)
-                VALUES (?, ?, ?, ?, ?)
-            """, (
-                repo.get("repo_name"),
-                date,
-                repo.get("rank"),
-                repo.get("stars"),
-                repo.get("forks")
-            ))
+            if self.backend == "postgres":
+                cursor.execute(
+                    """
+                    INSERT INTO repos_history
+                    (repo_name, date, rank, stars, forks)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(repo_name, date) DO UPDATE SET
+                        rank = EXCLUDED.rank,
+                        stars = EXCLUDED.stars,
+                        forks = EXCLUDED.forks
+                    """,
+                    (
+                        repo.get("repo_name"),
+                        date,
+                        repo.get("rank"),
+                        repo.get("stars"),
+                        repo.get("forks"),
+                    ),
+                )
+            else:
+                cursor.execute(
+                    """
+                    INSERT OR REPLACE INTO repos_history
+                    (repo_name, date, rank, stars, forks)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        repo.get("repo_name"),
+                        date,
+                        repo.get("rank"),
+                        repo.get("stars"),
+                        repo.get("forks"),
+                    ),
+                )
 
         self.conn.commit()
         logger.info(f"✅ 保存今日数据: {len(repos)} 条记录")
@@ -266,29 +489,77 @@ class Database:
             topics_json = json.dumps(detail.get("topics", []), ensure_ascii=False)
             purpose_assessment_json = json.dumps(detail.get("purpose_assessment", {}), ensure_ascii=False)
 
-            cursor.execute("""
-                INSERT OR REPLACE INTO repos_details
-                (repo_name, summary, description, use_case, solves, tags, category, category_zh,
-                 purpose_assessment, topics, language, readme_summary, owner, url, repo_updated_at, prompt_hash)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                detail.get("repo_name"),
-                detail.get("summary"),
-                detail.get("description"),
-                detail.get("use_case"),
-                solves_json,
-                tags_json,
-                detail.get("category"),
-                detail.get("category_zh"),
-                purpose_assessment_json,
-                topics_json,
-                detail.get("language"),
-                detail.get("readme_summary"),
-                detail.get("owner"),
-                detail.get("url"),
-                detail.get("repo_updated_at"),
-                detail.get("prompt_hash", "")
-            ))
+            if self.backend == "postgres":
+                cursor.execute(
+                    """
+                    INSERT INTO repos_details
+                    (repo_name, summary, description, use_case, solves, tags, category, category_zh,
+                     purpose_assessment, topics, language, readme_summary, owner, url, repo_updated_at, prompt_hash)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(repo_name) DO UPDATE SET
+                        summary = EXCLUDED.summary,
+                        description = EXCLUDED.description,
+                        use_case = EXCLUDED.use_case,
+                        solves = EXCLUDED.solves,
+                        tags = EXCLUDED.tags,
+                        category = EXCLUDED.category,
+                        category_zh = EXCLUDED.category_zh,
+                        purpose_assessment = EXCLUDED.purpose_assessment,
+                        topics = EXCLUDED.topics,
+                        language = EXCLUDED.language,
+                        readme_summary = EXCLUDED.readme_summary,
+                        owner = EXCLUDED.owner,
+                        url = EXCLUDED.url,
+                        repo_updated_at = EXCLUDED.repo_updated_at,
+                        prompt_hash = EXCLUDED.prompt_hash,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (
+                        detail.get("repo_name"),
+                        detail.get("summary"),
+                        detail.get("description"),
+                        detail.get("use_case"),
+                        solves_json,
+                        tags_json,
+                        detail.get("category"),
+                        detail.get("category_zh"),
+                        purpose_assessment_json,
+                        topics_json,
+                        detail.get("language"),
+                        detail.get("readme_summary"),
+                        detail.get("owner"),
+                        detail.get("url"),
+                        detail.get("repo_updated_at"),
+                        detail.get("prompt_hash", ""),
+                    ),
+                )
+            else:
+                cursor.execute(
+                    """
+                    INSERT OR REPLACE INTO repos_details
+                    (repo_name, summary, description, use_case, solves, tags, category, category_zh,
+                     purpose_assessment, topics, language, readme_summary, owner, url, repo_updated_at, prompt_hash)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        detail.get("repo_name"),
+                        detail.get("summary"),
+                        detail.get("description"),
+                        detail.get("use_case"),
+                        solves_json,
+                        tags_json,
+                        detail.get("category"),
+                        detail.get("category_zh"),
+                        purpose_assessment_json,
+                        topics_json,
+                        detail.get("language"),
+                        detail.get("readme_summary"),
+                        detail.get("owner"),
+                        detail.get("url"),
+                        detail.get("repo_updated_at"),
+                        detail.get("prompt_hash", ""),
+                    ),
+                )
 
         self.conn.commit()
         if verbose:
@@ -534,7 +805,7 @@ class Database:
             FROM repos_daily r
             LEFT JOIN repos_details d ON r.repo_name = d.repo_name
             WHERE r.date = ?
-            GROUP BY d.category
+            GROUP BY d.category, d.category_zh
             ORDER BY count DESC
         """, (date,))
 

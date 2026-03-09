@@ -82,7 +82,18 @@ EMAIL_TO = os.getenv("EMAIL_TO")
 # ============================================================================
 # 数据库配置
 # ============================================================================
+DB_BACKEND = (os.getenv("DB_BACKEND", "sqlite") or "sqlite").strip().lower()
+if DB_BACKEND not in {"sqlite", "postgres"}:
+    DB_BACKEND = "sqlite"
+
 DB_PATH = os.getenv("DB_PATH", "data/github-trending.db")
+PG_HOST = os.getenv("PG_HOST", "localhost")
+PG_PORT = _get_env_int("PG_PORT", 5432)
+PG_DATABASE = os.getenv("PG_DATABASE", "github_trend_analysis")
+PG_USER = os.getenv("PG_USER", "gh_analyzer")
+PG_PASSWORD = os.getenv("PG_PASSWORD", "dev123dev321")
+PG_SSLMODE = os.getenv("PG_SSLMODE", "prefer")
+DATABASE_URL = (os.getenv("DATABASE_URL") or "").strip()
 DB_RETENTION_DAYS = _get_env_int("DB_RETENTION_DAYS", 90)
 
 # ============================================================================
