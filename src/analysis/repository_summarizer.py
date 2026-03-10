@@ -547,6 +547,7 @@ class RepositorySummarizer:
         recent_pull_requests = repo.get("recent_pull_requests", [])
         focus_issue_threads = repo.get("focus_issue_threads", [])
         focus_pr_threads = repo.get("focus_pr_threads", [])
+        retrieval_context_chunks = repo.get("retrieval_context_chunks", [])
         activity_detail_last_comments = repo.get("activity_detail_last_comments", 4)
         activity_window_days = repo.get("activity_window_days", 30)
 
@@ -563,6 +564,17 @@ class RepositorySummarizer:
             focus_pr_threads,
             last_comments_limit=int(activity_detail_last_comments) if str(activity_detail_last_comments).isdigit() else 4,
         )
+        retrieval_text = "N/A"
+        if isinstance(retrieval_context_chunks, list) and retrieval_context_chunks:
+            lines = []
+            for chunk in retrieval_context_chunks[:6]:
+                if not isinstance(chunk, dict):
+                    continue
+                path = str(chunk.get("path") or "unknown")
+                score = float(chunk.get("score") or 0)
+                text = self._clip_text(chunk.get("text"), 260)
+                lines.append(f"- [{path}] score={score:.3f}: {text}")
+            retrieval_text = "\n".join(lines) if lines else "N/A"
         extra_prompt_text = self.extra_prompt if self.extra_prompt else "无"
 
         return f"""你是一个开源项目分析专家。请分析这个 GitHub 仓库并输出结构化结果。
@@ -588,6 +600,9 @@ README 摘要:
 
 二阶段深挖（原始PR + 最后{activity_detail_last_comments}条对话）:
 {pr_focus_text}
+
+本地向量检索上下文（README/docs 相关片段）:
+{retrieval_text}
 
 ---
 

@@ -58,6 +58,18 @@ def _get_env_positive_int(key: str, default: int, minimum: int = 1) -> int:
     return max(minimum, value)
 
 
+def _get_env_bool(key: str, default: bool = False) -> bool:
+    """获取布尔环境变量。"""
+    value = (os.getenv(key) or "").strip().lower()
+    if not value:
+        return default
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 def _get_env_list(key: str) -> list[str]:
     """获取逗号分隔的字符串列表环境变量"""
     value = os.getenv(key, "")
@@ -139,6 +151,26 @@ GITHUB_ACTIVITY_PRS_LIMIT = _get_env_positive_int("GITHUB_ACTIVITY_PRS_LIMIT", 6
 GITHUB_ACTIVITY_DETAIL_ISSUES_LIMIT = _get_env_positive_int("GITHUB_ACTIVITY_DETAIL_ISSUES_LIMIT", 2)
 GITHUB_ACTIVITY_DETAIL_PRS_LIMIT = _get_env_positive_int("GITHUB_ACTIVITY_DETAIL_PRS_LIMIT", 2)
 GITHUB_ACTIVITY_DETAIL_LAST_COMMENTS = _get_env_positive_int("GITHUB_ACTIVITY_DETAIL_LAST_COMMENTS", 4)
+
+# 分析复用与增量评估配置
+REPO_ANALYSIS_INTERVAL = _get_env_positive_int("REPO_ANALYSIS_INTERVAL", 7)
+REPO_CHANGE_SCORE_THRESHOLD = _get_env_positive_int("REPO_CHANGE_SCORE_THRESHOLD", 20)
+REPO_CHANGE_WEIGHT_METADATA = _get_env_positive_int("REPO_CHANGE_WEIGHT_METADATA", 35)
+REPO_CHANGE_WEIGHT_ACTIVITY = _get_env_positive_int("REPO_CHANGE_WEIGHT_ACTIVITY", 35)
+REPO_CHANGE_WEIGHT_RETRIEVAL = _get_env_positive_int("REPO_CHANGE_WEIGHT_RETRIEVAL", 30)
+REPO_TOP_BUCKET_SIZE = _get_env_positive_int("REPO_TOP_BUCKET_SIZE", 5)
+FORCE_REANALYSIS = _get_env_bool("FORCE_REANALYSIS", False)
+
+# 本地检索与向量索引配置
+REPO_LOCAL_CLONE_DIR = os.getenv("REPO_LOCAL_CLONE_DIR", "data/repo")
+RETRIEVAL_INDEX_DIR = os.getenv("RETRIEVAL_INDEX_DIR", "data/vector_index")
+RETRIEVAL_TOP_K = _get_env_positive_int("RETRIEVAL_TOP_K", 6)
+RETRIEVAL_CHUNK_SIZE = _get_env_positive_int("RETRIEVAL_CHUNK_SIZE", 1200)
+RETRIEVAL_CHUNK_OVERLAP = _get_env_positive_int("RETRIEVAL_CHUNK_OVERLAP", 200)
+RETRIEVAL_EMBED_MODEL = (os.getenv("RETRIEVAL_EMBED_MODEL") or "").strip()
+VECTOR_BACKEND = (os.getenv("VECTOR_BACKEND") or "faiss").strip().lower()
+if VECTOR_BACKEND not in {"faiss", "numpy"}:
+    VECTOR_BACKEND = "faiss"
 
 # 关键词检索 + 自定义分析 Prompt（通过配置文件设置）
 ANALYSIS_KEYWORDS = _get_env_list("ANALYSIS_KEYWORDS")
