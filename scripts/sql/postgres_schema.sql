@@ -58,6 +58,44 @@ CREATE TABLE IF NOT EXISTS github_fetch_state (
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS repo_analysis_state (
+    repo_name TEXT PRIMARY KEY,
+    last_analyzed_at TEXT,
+    last_prompt_hash TEXT,
+    last_model TEXT,
+    last_repo_updated_at TEXT,
+    last_commit_sha TEXT,
+    last_rank_bucket TEXT,
+    last_change_score DOUBLE PRECISION DEFAULT 0,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS repo_analysis_runs (
+    id BIGSERIAL PRIMARY KEY,
+    repo_name TEXT NOT NULL,
+    analyzed_at TEXT NOT NULL,
+    model TEXT,
+    prompt_hash TEXT,
+    strategy_hash TEXT,
+    commit_sha TEXT,
+    change_score DOUBLE PRECISION DEFAULT 0,
+    reused INTEGER DEFAULT 0,
+    trigger_reason TEXT,
+    analysis_json TEXT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS repo_index_state (
+    repo_name TEXT PRIMARY KEY,
+    index_backend TEXT,
+    index_path TEXT,
+    embedding_model TEXT,
+    indexed_commit_sha TEXT,
+    chunk_count INTEGER DEFAULT 0,
+    manifest_json TEXT,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+
 ALTER TABLE repos_daily ADD COLUMN IF NOT EXISTS repo_updated_at TEXT;
 ALTER TABLE repos_details ADD COLUMN IF NOT EXISTS repo_updated_at TEXT;
 ALTER TABLE repos_details ADD COLUMN IF NOT EXISTS tags TEXT;
@@ -72,3 +110,4 @@ CREATE INDEX IF NOT EXISTS idx_details_owner ON repos_details(owner);
 CREATE INDEX IF NOT EXISTS idx_details_language ON repos_details(language);
 CREATE INDEX IF NOT EXISTS idx_history_repo ON repos_history(repo_name);
 CREATE INDEX IF NOT EXISTS idx_history_date ON repos_history(date);
+CREATE INDEX IF NOT EXISTS idx_analysis_runs_repo_time ON repo_analysis_runs(repo_name, analyzed_at);

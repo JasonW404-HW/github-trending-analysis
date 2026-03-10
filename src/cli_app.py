@@ -22,11 +22,13 @@ from src.config import (
     TOP_N_REPOS_FOR_DETAILS,
     TOP_N_REPOS_FOR_LLM,
     MODEL,
+    FORCE_REANALYSIS,
 )
 from src.infrastructure.database import Database
 from src.email import ResendSender
 from src.web import EmailReporter
 from src.pipeline import AnalysisRunResult, RepoSelectionResult, TrendingWorkflow
+from src.pipeline.repository_analysis import RepositoryAnalysisStep
 from src.util.print_util import banner, logger
 from src.infrastructure.web_generator import WebGenerator
 
@@ -211,7 +213,12 @@ def _extract_repo_argument(args: List[str]) -> Tuple[Optional[str], Optional[str
     return normalized, None
 
 
-def run_daily_command() -> int:
+def _build_workflow(db: Database, force_reanalysis: bool = False) -> TrendingWorkflow:
+    analysis_step = RepositoryAnalysisStep(db=db, force_reanalysis=force_reanalysis)
+    return TrendingWorkflow(db=db, analysis_step=analysis_step)
+
+
+def run_daily_command(force_reanalysis: bool = False) -> int:
     """执行全量任务。"""
     print_banner()
 
@@ -225,7 +232,7 @@ def run_daily_command() -> int:
 
     db = Database(DB_PATH)
     db.init_db()
-    workflow = TrendingWorkflow(db)
+    workflow = _build_workflow(db, force_reanalysis=force_reanalysis)
 
     try:
         logger.info("[步骤 1/8] 获取仓库排行榜（周期+ETag缓存）...")
@@ -331,7 +338,7 @@ def run_daily_command() -> int:
         db.close()
 
 
-def run_fetch_only_command() -> int:
+def run_fetch_only_command(force_reanalysis: bool = False) -> int:
     """仅获取和分析数据，不发送邮件。"""
     print_banner()
 
@@ -341,7 +348,7 @@ def run_fetch_only_command() -> int:
 
     db = Database(DB_PATH)
     db.init_db()
-    workflow = TrendingWorkflow(db)
+    workflow = _build_workflow(db, force_reanalysis=force_reanalysis)
 
     try:
         logger.info("[步骤 1/3] 获取仓库列表（周期+ETag缓存）...")
@@ -379,7 +386,7 @@ def run_fetch_only_command() -> int:
         db.close()
 
 
-def run_single_repo_command(repo_identifier: str) -> int:
+def run_single_repo_command(repo_identifier: str, force_reanalysis: bool = False) -> int:
     """仅分析指定仓库，并发送邮件。"""
     print_banner()
 
@@ -393,7 +400,7 @@ def run_single_repo_command(repo_identifier: str) -> int:
 
     db = Database(DB_PATH)
     db.init_db()
-    workflow = TrendingWorkflow(db)
+    workflow = _build_workflow(db, force_reanalysis=force_reanalysis)
 
     try:
         logger.info("[步骤 1/5] 获取目标仓库信息...")
@@ -568,16 +575,21 @@ def run_cli(args: List[str]) -> int:
 
     has_fetch_only = "--fetch-only" in args
     has_opportunity_report = "--opportunity-report" in args
+    has_force_reanalysis = "--force-reanalysis" in args
+    force_reanalysis = FORCE_REANALYSIS or has_force_reanalysis
 
     if repo_identifier and (has_fetch_only or has_opportunity_report):
         logger.error("❌ 参数冲突: --repo 不能与 --fetch-only 或 --opportunity-report 同时使用")
         return 2
 
+    if has_force_reanalysis:
+        logger.info("[分析策略] 已启用强制重分析 --force-reanalysis")
+
     if repo_identifier:
-        return run_single_repo_command(repo_identifier)
+        return run_single_repo_command(repo_identifier, force_reanalysis=force_reanalysis)
 
     if has_fetch_only:
-        return run_fetch_only_command()
+        return run_fetch_only_command(force_reanalysis=force_reanalysis)
     if has_opportunity_report:
         return run_opportunity_report_command()
-    return run_daily_command()
+    return run_daily_command(force_reanalysis=force_reanalysis)

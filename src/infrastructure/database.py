@@ -239,6 +239,50 @@ class Database:
                     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS repo_analysis_state (
+                    repo_name TEXT PRIMARY KEY,
+                    last_analyzed_at TEXT,
+                    last_prompt_hash TEXT,
+                    last_model TEXT,
+                    last_repo_updated_at TEXT,
+                    last_commit_sha TEXT,
+                    last_rank_bucket TEXT,
+                    last_change_score REAL DEFAULT 0,
+                    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS repo_analysis_runs (
+                    id BIGSERIAL PRIMARY KEY,
+                    repo_name TEXT NOT NULL,
+                    analyzed_at TEXT NOT NULL,
+                    model TEXT,
+                    prompt_hash TEXT,
+                    strategy_hash TEXT,
+                    commit_sha TEXT,
+                    change_score REAL DEFAULT 0,
+                    reused INTEGER DEFAULT 0,
+                    trigger_reason TEXT,
+                    analysis_json TEXT NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS repo_index_state (
+                    repo_name TEXT PRIMARY KEY,
+                    index_backend TEXT,
+                    index_path TEXT,
+                    embedding_model TEXT,
+                    indexed_commit_sha TEXT,
+                    chunk_count INTEGER DEFAULT 0,
+                    manifest_json TEXT,
+                    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
         else:
             # 1. repos_daily - 每日快照表
             cursor.execute("""
@@ -308,6 +352,50 @@ class Database:
                 )
             """)
 
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS repo_analysis_state (
+                    repo_name TEXT PRIMARY KEY,
+                    last_analyzed_at TEXT,
+                    last_prompt_hash TEXT,
+                    last_model TEXT,
+                    last_repo_updated_at TEXT,
+                    last_commit_sha TEXT,
+                    last_rank_bucket TEXT,
+                    last_change_score REAL DEFAULT 0,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS repo_analysis_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    repo_name TEXT NOT NULL,
+                    analyzed_at TEXT NOT NULL,
+                    model TEXT,
+                    prompt_hash TEXT,
+                    strategy_hash TEXT,
+                    commit_sha TEXT,
+                    change_score REAL DEFAULT 0,
+                    reused INTEGER DEFAULT 0,
+                    trigger_reason TEXT,
+                    analysis_json TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS repo_index_state (
+                    repo_name TEXT PRIMARY KEY,
+                    index_backend TEXT,
+                    index_path TEXT,
+                    embedding_model TEXT,
+                    indexed_commit_sha TEXT,
+                    chunk_count INTEGER DEFAULT 0,
+                    manifest_json TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
         # 兼容旧库：补充新增字段
         self._ensure_column("repos_daily", "repo_updated_at", "TEXT")
         self._ensure_column("repos_details", "repo_updated_at", "TEXT")
@@ -324,6 +412,7 @@ class Database:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_details_language ON repos_details(language)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_history_repo ON repos_history(repo_name)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_history_date ON repos_history(date)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_analysis_runs_repo_time ON repo_analysis_runs(repo_name, analyzed_at)")
 
         self.conn.commit()
         db_target = self.database_url if self.backend == "postgres" else self.db_path
@@ -698,6 +787,170 @@ class Database:
                 updated_at = CURRENT_TIMESTAMP
         """, (request_key, etag, last_checked_at, last_success_at))
 
+        self.conn.commit()
+
+    def get_repo_analysis_state(self, repo_name: str) -> Optional[Dict]:
+        """获取仓库分析状态。"""
+        self.connect()
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT repo_name, last_analyzed_at, last_prompt_hash, last_model,
+                   last_repo_updated_at, last_commit_sha, last_rank_bucket,
+                   last_change_score, updated_at
+            FROM repo_analysis_state
+            WHERE repo_name = ?
+            """,
+            (repo_name,),
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def upsert_repo_analysis_state(
+        self,
+        repo_name: str,
+        last_analyzed_at: str,
+        last_prompt_hash: str,
+        last_model: str,
+        last_repo_updated_at: str,
+        last_commit_sha: str,
+        last_rank_bucket: str,
+        last_change_score: float,
+    ) -> None:
+        """写入/更新仓库分析状态。"""
+        self.connect()
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO repo_analysis_state
+            (repo_name, last_analyzed_at, last_prompt_hash, last_model, last_repo_updated_at,
+             last_commit_sha, last_rank_bucket, last_change_score, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(repo_name) DO UPDATE SET
+                last_analyzed_at = excluded.last_analyzed_at,
+                last_prompt_hash = excluded.last_prompt_hash,
+                last_model = excluded.last_model,
+                last_repo_updated_at = excluded.last_repo_updated_at,
+                last_commit_sha = excluded.last_commit_sha,
+                last_rank_bucket = excluded.last_rank_bucket,
+                last_change_score = excluded.last_change_score,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                repo_name,
+                last_analyzed_at,
+                last_prompt_hash,
+                last_model,
+                last_repo_updated_at,
+                last_commit_sha,
+                last_rank_bucket,
+                float(last_change_score or 0),
+            ),
+        )
+        self.conn.commit()
+
+    def insert_repo_analysis_run(
+        self,
+        repo_name: str,
+        analyzed_at: str,
+        model: str,
+        prompt_hash: str,
+        strategy_hash: str,
+        commit_sha: str,
+        change_score: float,
+        reused: bool,
+        trigger_reason: str,
+        analysis: Dict,
+    ) -> None:
+        """写入分析运行记录（包含复用记录）。"""
+        self.connect()
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO repo_analysis_runs
+            (repo_name, analyzed_at, model, prompt_hash, strategy_hash, commit_sha,
+             change_score, reused, trigger_reason, analysis_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                repo_name,
+                analyzed_at,
+                model,
+                prompt_hash,
+                strategy_hash,
+                commit_sha,
+                float(change_score or 0),
+                1 if reused else 0,
+                trigger_reason,
+                json.dumps(analysis or {}, ensure_ascii=False),
+            ),
+        )
+        self.conn.commit()
+
+    def get_repo_index_state(self, repo_name: str) -> Optional[Dict]:
+        """获取仓库向量索引状态。"""
+        self.connect()
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT repo_name, index_backend, index_path, embedding_model,
+                   indexed_commit_sha, chunk_count, manifest_json, updated_at
+            FROM repo_index_state
+            WHERE repo_name = ?
+            """,
+            (repo_name,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        payload = dict(row)
+        if payload.get("manifest_json"):
+            try:
+                payload["manifest_json"] = json.loads(payload["manifest_json"])
+            except json.JSONDecodeError:
+                payload["manifest_json"] = {}
+        else:
+            payload["manifest_json"] = {}
+        return payload
+
+    def upsert_repo_index_state(
+        self,
+        repo_name: str,
+        index_backend: str,
+        index_path: str,
+        embedding_model: str,
+        indexed_commit_sha: str,
+        chunk_count: int,
+        manifest: Dict,
+    ) -> None:
+        """写入/更新仓库向量索引状态。"""
+        self.connect()
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO repo_index_state
+            (repo_name, index_backend, index_path, embedding_model, indexed_commit_sha,
+             chunk_count, manifest_json, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(repo_name) DO UPDATE SET
+                index_backend = excluded.index_backend,
+                index_path = excluded.index_path,
+                embedding_model = excluded.embedding_model,
+                indexed_commit_sha = excluded.indexed_commit_sha,
+                chunk_count = excluded.chunk_count,
+                manifest_json = excluded.manifest_json,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                repo_name,
+                index_backend,
+                index_path,
+                embedding_model,
+                indexed_commit_sha,
+                int(chunk_count or 0),
+                json.dumps(manifest or {}, ensure_ascii=False),
+            ),
+        )
         self.conn.commit()
 
     def cleanup_old_data(self, days: int = None) -> int:
