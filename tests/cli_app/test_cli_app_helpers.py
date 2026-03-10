@@ -58,3 +58,20 @@ def test_build_email_report_payload_counts_levels(monkeypatch):
     assert payload["strong_count"] == 2
     assert payload["weak_count"] == 1
     assert payload["total_candidates"] == 3
+
+
+def test_run_cli_passes_force_reanalysis(monkeypatch):
+    monkeypatch.setattr(cli_app, "FORCE_REANALYSIS", False)
+
+    captured = {}
+
+    def fake_run_daily_command(force_reanalysis=False):
+        captured["force_reanalysis"] = force_reanalysis
+        return 0
+
+    monkeypatch.setattr(cli_app, "run_daily_command", fake_run_daily_command)
+
+    result = cli_app.run_cli(["--force-reanalysis"])
+
+    assert result == 0
+    assert captured["force_reanalysis"] is True

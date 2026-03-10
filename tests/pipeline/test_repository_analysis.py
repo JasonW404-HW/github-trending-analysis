@@ -1,18 +1,40 @@
 from typing import Any, cast
 
 from src.pipeline.repository_analysis import RepositoryAnalysisStep
+from src.config import MODEL
 
 
 class DummyDb:
     def __init__(self, cache=None):
         self.cache = cache or {}
         self.saved = []
+        self.states = {}
+        self.index_states = {}
+        self.runs = []
 
     def get_repo_details_if_fresh(self, repo_name, repo_updated_at, prompt_hash):
         return self.cache.get(repo_name)
 
+    def get_repo_details(self, repo_name):
+        return self.cache.get(repo_name)
+
     def save_repo_detail(self, summary, verbose=False):
         self.saved.append((summary, verbose))
+
+    def get_repo_analysis_state(self, repo_name):
+        return self.states.get(repo_name)
+
+    def upsert_repo_analysis_state(self, **kwargs):
+        self.states[kwargs["repo_name"]] = dict(kwargs)
+
+    def insert_repo_analysis_run(self, **kwargs):
+        self.runs.append(dict(kwargs))
+
+    def get_repo_index_state(self, repo_name):
+        return self.index_states.get(repo_name)
+
+    def upsert_repo_index_state(self, **kwargs):
+        self.index_states[kwargs["repo_name"]] = dict(kwargs)
 
 
 class DummyReadmeFetcher:
@@ -153,3 +175,46 @@ def test_attach_recent_activity_handles_invalid_payloads():
     assert repos[0]["recent_pull_requests"] == []
     assert repos[0]["focus_issue_threads"] == []
     assert repos[0]["focus_pr_threads"] == []
+
+
+def test_analyze_reuses_previous_result_when_low_change_and_within_interval():
+    db = DummyDb(
+        cache={
+            "owner/reuse": {
+                "repo_name": "owner/reuse",
+                "summary": "cached summary",
+                "repo_updated_at": "2026-01-01T00:00:00Z",
+                "prompt_hash": "abcd",
+            }
+        }
+    )
+    db.states["owner/reuse"] = {
+        "repo_name": "owner/reuse",
+        "last_analyzed_at": "2099-01-01T00:00:00Z",
+        "last_prompt_hash": RepositoryAnalysisStep._build_prompt_hash("", strategy_salt="activity-v2|30|6|6|2|2|4"),
+        "last_model": MODEL,
+        "last_repo_updated_at": "2026-01-01T00:00:00Z",
+        "last_rank_bucket": "other",
+        "last_change_score": 1,
+    }
+
+    step = RepositoryAnalysisStep(
+        db=cast(Any, db),
+        readme_fetcher=cast(Any, DummyReadmeFetcher({})),
+        activity_fetcher=cast(Any, DummyActivityFetcher({"owner/reuse": {"issues": [], "pull_requests": []}})),
+        summarizer_factory=cast(Any, DummySummarizer),
+        analysis_interval_days=30,
+        change_score_threshold=99,
+    )
+
+    result = step.analyze([
+        {
+            "repo_name": "owner/reuse",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "rank": 10,
+        }
+    ])
+
+    assert result.stats.pending_count == 0
+    assert result.summary_map["owner/reuse"]["summary"] == "cached summary"
+    assert db.saved == []
